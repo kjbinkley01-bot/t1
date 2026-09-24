@@ -208,8 +208,18 @@ def validate(script, assets):
         out.append(("ok", f"All {total} image files present"))
     problems = []
     no_timeout = []
+    seen = {}
     for i, st in enumerate(steps, 1):
-        err = model.check_step(st, n)
+        lab = str(st.get("label") or "").strip()
+        if lab:
+            if lab in seen:
+                problems.append(f"Step {i}: label '{lab}' is already used by step {seen[lab]}")
+            seen.setdefault(lab, i)
+    _, block_err = model.match_blocks(steps)
+    if block_err:
+        problems.append(block_err)
+    for i, st in enumerate(steps, 1):
+        err = model.check_step(st, steps)
         if err:
             problems.append(f"Step {i}: {err}")
         w = st.get("wait") or {}
@@ -218,7 +228,7 @@ def validate(script, assets):
         if st["action"] in ("Click Image", "Wait for Image", "Wait for Image to Vanish",
                             "Wait for Pixel Color", "Wait for Screen to Settle") and "timeout_s" not in st:
             no_timeout.append(str(i))
-        if w.get("mode") == "goto" and not w.get("goto"):
+        if w.get("on_timeout") == "goto" and not w.get("goto"):
             problems.append(f"Step {i}: timeout jump has no step number")
     if problems:
         out.extend(("error", p) for p in problems[:5])
@@ -226,9 +236,14 @@ def validate(script, assets):
         out.append(("ok", "Every step has a valid action"))
     if no_timeout:
         out.append(("warn", f"Step {', '.join(sorted(set(no_timeout), key=int))} has no timeout, defaults applied"))
-    handler = script.get("error_handler")
-    if handler and not 1 <= int(handler) <= n:
-        out.append(("error", f"Error handler step {handler} does not exist"))
+    try:
+        model.resolve_target(steps, script.get("error_handler"))
+    except ValueError as e:
+        out.append(("error", f"Error handler: {e}"))
+    if any(st["action"] == "Read Text" for st in steps):
+        problem = vision.ocr_problem()
+        if problem:
+            out.append(("warn", f"Read Text steps will fail: {problem}"))
     scr = script.get("screen")
     if scr:
         try:

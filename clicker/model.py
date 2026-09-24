@@ -4,7 +4,7 @@ import copy
 import re
 
 APP_NAME = "Clicker"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1.0"
 
 ACTION_GROUPS = [
     ("Mouse", [
@@ -22,8 +22,14 @@ ACTION_GROUPS = [
         "Click Image", "Wait for Image", "Wait for Image to Vanish", "Wait for Pixel Color",
         "Wait for Screen to Settle", "If Image Found", "If Image Not Found", "If Pixel Color",
     ]),
+    ("Text", ["Read Text"]),
+    ("Variables", ["Set Variable", "Increment Variable", "If Variable"]),
+    ("Loops", [
+        "While Image Found", "While Image Not Found", "While Pixel Color", "While Variable",
+        "End While", "Loop Back",
+    ]),
     ("Flow", [
-        "Delay", "Random Delay", "Go to Step", "Loop Back", "Run Script File",
+        "Delay", "Random Delay", "Go to Step", "Call Subroutine", "Return", "Run Script File",
         "Show Notification", "Beep", "Show Desktop", "Stop Script",
     ]),
 ]
@@ -58,22 +64,33 @@ SCROLL_MAP = {
     "Scroll Up": (0, 1), "Scroll Down": (0, -1),
     "Scroll Left": (-1, 0), "Scroll Right": (1, 0),
 }
-NEEDS_XY = set(DRAG_MAP) | {"Move Mouse", "Wait for Pixel Color", "If Pixel Color"}
+NEEDS_XY = set(DRAG_MAP) | {"Move Mouse", "Wait for Pixel Color", "If Pixel Color", "While Pixel Color"}
 XY_OPTIONAL = set(CLICK_MAP) | set(SCROLL_MAP)
 XY_IS_OFFSET = {"Move Mouse by Offset", "Click Image"}
 MOUSE_ACTIONS = set(CLICK_MAP) | set(DRAG_MAP) | set(SCROLL_MAP) | {
     "Move Mouse", "Move Mouse by Offset", "Move Mouse by Angle", "Click Image"}
 IMAGE_ACTIONS = {"Click Image", "Wait for Image", "Wait for Image to Vanish",
-                 "If Image Found", "If Image Not Found"}
-SCREEN_ACTIONS = set(dict(ACTION_GROUPS)["Screen"])
+                 "If Image Found", "If Image Not Found", "While Image Found", "While Image Not Found"}
+WHILE_ACTIONS = {"While Image Found", "While Image Not Found", "While Pixel Color", "While Variable"}
+SCREEN_ACTIONS = set(dict(ACTION_GROUPS)["Screen"]) | {"Read Text", "While Image Found",
+                                                      "While Image Not Found", "While Pixel Color"}
+COMPARE_OPS = ["=", "!=", "<", "<=", ">", ">=", "contains", "not contains"]
+TARGET_KEYS = ("goto", "else_goto")
+NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]*$")
+MAX_CALL_DEPTH = 50
 
 _IMG = [
     ("image", "Image", 20, "image"),
     ("region", "Search region", 16, "region"),
-    ("confidence", "Match %", 5, "int"),
+    ("confidence", "Match %", 5, "percent"),
 ]
-_BRANCH = [("goto", "Then step", 5, "int"), ("else_goto", "Else step", 5, "int")]
+_BRANCH = [("goto", "Then step", 10, "target"), ("else_goto", "Else step", 10, "target")]
 _TIMEOUT = [("timeout_s", "Timeout s", 5, "int")]
+_PIXEL = [("color", "Color", 9, "color"), ("tolerance", "Tolerance", 5, "int")]
+_COMPARE = [("var", "Variable", 14, "var"), ("op", "Is", 10, "choice:" + ",".join(COMPARE_OPS)),
+            ("value", "Value", 14, "text")]
+_MAX = [("max_loops", "Max loops", 6, "int")]
 
 # action: list of (key, label, width, kind)
 FIELD_SPECS = {
@@ -91,14 +108,24 @@ FIELD_SPECS = {
     "Wait for Image to Vanish": _IMG + _TIMEOUT,
     "If Image Found": _IMG + _BRANCH,
     "If Image Not Found": _IMG + _BRANCH,
-    "Wait for Pixel Color": [("color", "Color", 9, "color"), ("tolerance", "Tolerance", 5, "int")] + _TIMEOUT,
-    "If Pixel Color": [("color", "Color", 9, "color"), ("tolerance", "Tolerance", 5, "int")] + _BRANCH,
+    "Wait for Pixel Color": _PIXEL + _TIMEOUT,
+    "If Pixel Color": _PIXEL + _BRANCH,
     "Wait for Screen to Settle": [("region", "Region", 16, "region"),
                                   ("stable_ms", "Still for ms", 6, "int")] + _TIMEOUT,
     "Delay": [("ms", "Milliseconds", 8, "int")],
     "Random Delay": [("min_ms", "Min ms", 7, "int"), ("max_ms", "Max ms", 7, "int")],
-    "Go to Step": [("goto", "Step", 5, "int")],
-    "Loop Back": [("goto", "To step", 5, "int"), ("times", "Times", 5, "int")],
+    "Go to Step": [("goto", "Step", 10, "target")],
+    "Loop Back": [("goto", "To step", 10, "target"), ("times", "Times", 5, "int")],
+    "Call Subroutine": [("goto", "Step", 10, "target")],
+    "Read Text": [("region", "Region", 16, "region"), ("var", "Save to", 14, "var"),
+                  ("mode", "Read as", 8, "choice:text,number")],
+    "Set Variable": [("var", "Variable", 14, "var"), ("value", "Value", 30, "text")],
+    "Increment Variable": [("var", "Variable", 14, "var"), ("amount", "By", 6, "sint")],
+    "If Variable": _COMPARE + _BRANCH,
+    "While Image Found": _IMG + _MAX,
+    "While Image Not Found": _IMG + _MAX,
+    "While Pixel Color": _PIXEL + _MAX,
+    "While Variable": _COMPARE + _MAX,
     "Run Script File": [("file", "File", 40, "file")],
     "Show Notification": [("message", "Message", 44, "text")],
 }
@@ -108,6 +135,7 @@ DEFAULTS = {
     "stable_ms": "800", "ms": "500", "min_ms": "200", "max_ms": "800", "times": "3",
     "button": "left", "goto": "", "else_goto": "", "region": "", "image": "",
     "text": "", "keys": "", "file": "", "message": "", "color": "",
+    "var": "", "value": "", "op": "=", "mode": "text", "max_loops": "0",
 }
 
 ACTION_HINTS = {
@@ -125,6 +153,18 @@ ACTION_HINTS = {
     "Scroll Up": "X and Y are optional. Blank scrolls wherever the cursor is.",
     "Scroll Down": "X and Y are optional. Blank scrolls wherever the cursor is.",
     "Wait for Screen to Settle": "Blank region watches the whole screen.",
+    "Go to Step": "A step number, or a label name you gave a step.",
+    "Call Subroutine": "Jumps to a step or label, and Return comes back here. End the main part with Return.",
+    "Return": "Goes back to the step after the last Call Subroutine. Outside a subroutine it ends this pass.",
+    "Read Text": "Reads the text in the region (OCR) into a variable. Needs Tesseract installed.",
+    "Set Variable": "Use {name} anywhere text is typed to insert the value. Other {variables} work here too.",
+    "Increment Variable": "Adds the amount (use a negative number to subtract). Blank variables start at 0.",
+    "If Variable": "Numbers compare as numbers; anything else compares as text.",
+    "While Image Found": "Repeats the steps down to End While as long as the image is on screen.",
+    "While Image Not Found": "Repeats the steps down to End While until the image shows up.",
+    "While Pixel Color": "Repeats the steps down to End While while the pixel has this color.",
+    "While Variable": "Repeats the steps down to End While while the comparison is true.",
+    "End While": "Marks the end of the nearest While above it.",
 }
 
 WAIT_MODES = [
@@ -140,10 +180,12 @@ WAIT_ID = {v: k for k, v in WAIT_MODES}
 ON_TIMEOUT = [
     ("stop", "Stop script"),
     ("skip", "Skip this step"),
-    ("retry", "Retry step (3x)"),
+    ("retry", "Retry step"),
+    ("retry_handler", "Retry, then error handler"),
     ("goto", "Go to step"),
     ("handler", "Run error handler"),
 ]
+DEFAULT_RETRIES = 3
 ON_TIMEOUT_LABEL = dict(ON_TIMEOUT)
 ON_TIMEOUT_ID = {v: k for k, v in ON_TIMEOUT}
 
@@ -168,7 +210,8 @@ def new_script(name="Untitled"):
         "name": name,
         "description": "",
         "screen": None,
-        "settings": {"repeat": 1, "speed": 1.0, "random_delay_ms": 0},
+        "settings": {"repeat": 1, "speed": 1.0, "random_delay_ms": 0,
+                     "restart_on_failure": 0, "scale_search": False},
         "inputs": [],
         "error_handler": None,
         "steps": [],
@@ -177,7 +220,7 @@ def new_script(name="Untitled"):
 
 def new_step(action="Left Click"):
     return {"action": action, "x": None, "y": None, "cursor_back": False,
-            "delay_ms": 100, "repeat": 1, "comment": "", "wait": {"mode": "none"}}
+            "delay_ms": 100, "repeat": 1, "comment": "", "label": "", "wait": {"mode": "none"}}
 
 
 def normalize_script(data):
@@ -191,6 +234,7 @@ def normalize_script(data):
     for key in ("description", "screen", "error_handler"):
         if key in data:
             s[key] = data[key]
+    s["error_handler"] = _norm_target(s["error_handler"])
     s["settings"].update(data.get("settings") or {})
     inputs = []
     for item in data.get("inputs") or []:
@@ -217,6 +261,12 @@ def normalize_script(data):
             except (TypeError, ValueError):
                 raise ValueError(f"Step {n}: {key} must be a number")
         st["repeat"] = max(1, st["repeat"])
+        for key in TARGET_KEYS:
+            if key in st:
+                st[key] = _norm_target(st[key])
+        if "goto" in w:
+            w["goto"] = _norm_target(w["goto"])
+        st["label"] = str(st.get("label") or "").strip()
         for key in ("x", "y"):
             if st.get(key) in ("", None):
                 st[key] = None
@@ -228,6 +278,18 @@ def normalize_script(data):
         out.append(st)
     s["steps"] = out
     return s
+
+
+def _norm_target(v):
+    """Step numbers may arrive as "3" or 3.0; labels stay strings; blank is None."""
+    if v in (None, "") or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return int(v)
+    v = str(v).strip()
+    if re.fullmatch(r"\d+", v):
+        return int(v)
+    return v or None
 
 
 def copy_script(script):
@@ -333,13 +395,39 @@ def parse_pixel_target(raw):
     return x, y, parse_color(parts[2])
 
 
+def parse_target(raw, label="Step"):
+    """A jump target: a 1 based step number, a label name, or blank (None)."""
+    raw = str(raw if raw is not None else "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d+", raw):
+        val = int(raw)
+        if val < 1:
+            raise ValueError(f"{label} must be at least 1.")
+        return val
+    if not LABEL_RE.match(raw):
+        raise ValueError(f"{label} must be a step number or a label name (letters, digits, _ and -).")
+    return raw
+
+
+def parse_var(raw, label="Variable"):
+    raw = str(raw or "").strip().strip("{}")
+    if not NAME_RE.match(raw):
+        raise ValueError(f"{label} must be a name like count or page_title (letters, digits and _).")
+    return raw
+
+
 def parse_field(kind, raw, label):
     raw = "" if raw is None else str(raw)
+    if kind == "target":
+        return parse_target(raw, label)
+    if kind == "percent":
+        return parse_int(raw, label, 50, 100) / 100.0
+    if kind == "var":
+        return parse_var(raw, label)
+    if kind == "sint":
+        return parse_int(raw, label)
     if kind == "int":
-        if label in ("Then step", "Else step"):
-            return parse_int(raw, label, 1, allow_blank=True)
-        if label == "Match %":
-            return parse_int(raw, label, 50, 100) / 100.0
         return parse_int(raw, label, 0)
     if kind == "region":
         return parse_region(raw, label)
@@ -357,13 +445,116 @@ def field_to_text(kind, value, label=""):
         return ""
     if kind == "region":
         return format_region(value)
-    if label == "Match %":
+    if kind == "percent" or label == "Match %":
         return str(int(round(float(value) * 100)))
     return str(value)
 
 
-def check_step(step, n_steps=None):
-    """Return an error message for an incomplete step, or None."""
+# ---------------------------------------------------------------- jump targets
+
+def label_map(steps):
+    """{label: 0 based index} for every labelled step (first one wins)."""
+    out = {}
+    for i, st in enumerate(steps):
+        name = str(st.get("label") or "").strip()
+        if name and name not in out:
+            out[name] = i
+    return out
+
+
+def resolve_target(steps, value, labels=None):
+    """Turn a step number or label into a 0 based index. None means 'no jump'."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, str) and re.fullmatch(r"\s*\d+\s*", value):
+        value = int(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        idx = int(value) - 1
+        if not 0 <= idx < len(steps):
+            raise ValueError(f"Step {int(value)} does not exist.")
+        return idx
+    labels = label_map(steps) if labels is None else labels
+    name = str(value).strip()
+    if name not in labels:
+        raise ValueError(f"No step is labelled '{name}'.")
+    return labels[name]
+
+
+def _target_slots(script):
+    """Yield (container, key) for every place a step number can live."""
+    for st in script.get("steps", []):
+        for key in TARGET_KEYS:
+            if key in st:
+                yield st, key
+        w = st.get("wait")
+        if isinstance(w, dict) and "goto" in w:
+            yield w, "goto"
+    yield script, "error_handler"
+
+
+def remap_targets(script, mapping):
+    """Keep numeric jumps pointing at the same steps after the list changes.
+
+    mapping: {old 0 based index: new 0 based index or None if deleted}.
+    A jump to a deleted step moves to the next step that survived.
+    Label jumps need no change. Updates script in place.
+    """
+    if not mapping:
+        return
+    old_n = max(mapping) + 1
+    for box, key in list(_target_slots(script)):
+        v = box.get(key)
+        if isinstance(v, bool) or not isinstance(v, int):
+            continue
+        old = v - 1
+        if not 0 <= old < old_n:
+            continue
+        new = mapping.get(old)
+        k = old
+        while new is None and k + 1 < old_n:
+            k += 1
+            new = mapping.get(k)
+        box[key] = None if new is None else new + 1
+
+
+def reorder(script, order):
+    """Rebuild the step list. order holds old indexes, or step dicts for new steps."""
+    old = script["steps"]
+    new_steps, mapping = [], {i: None for i in range(len(old))}
+    for pos, item in enumerate(order):
+        if isinstance(item, int):
+            new_steps.append(old[item])
+            mapping[item] = pos
+        else:
+            new_steps.append(item)
+    script["steps"] = new_steps
+    remap_targets(script, mapping)
+
+
+def match_blocks(steps):
+    """Pair each While with its End While. Returns ({index: partner}, error or None)."""
+    pairs, stack = {}, []
+    for i, st in enumerate(steps):
+        a = st.get("action")
+        if st.get("disabled"):
+            continue
+        if a in WHILE_ACTIONS:
+            stack.append(i)
+        elif a == "End While":
+            if not stack:
+                return pairs, f"Step {i + 1}: End While has no While above it."
+            j = stack.pop()
+            pairs[i], pairs[j] = j, i
+    if stack:
+        return pairs, f"Step {stack[-1] + 1}: {steps[stack[-1]]['action']} has no End While."
+    return pairs, None
+
+
+def check_step(step, steps=None):
+    """Return an error message for an incomplete step, or None.
+
+    Pass the whole step list to also check that jump targets exist.
+    """
     a = step["action"]
     if a not in ACTION_GROUP:
         return f"Unknown action '{a}'."
@@ -378,19 +569,30 @@ def check_step(step, n_steps=None):
         return "Enter the text to type."
     if a in ("Send Keystroke", "Hot Key", "Key Down", "Key Up") and not step.get("keys"):
         return "Enter the key or keys."
-    if a in ("Wait for Pixel Color", "If Pixel Color") and not step.get("color"):
+    if a in ("Wait for Pixel Color", "If Pixel Color", "While Pixel Color") and not step.get("color"):
         return "Enter the color to look for, or use Grab."
-    if a in ("Go to Step", "Loop Back") and not step.get("goto"):
-        return "Enter the step number to go to."
+    if a in ("Go to Step", "Loop Back", "Call Subroutine") and not step.get("goto"):
+        return "Enter the step number or label to go to."
     if a == "Run Script File" and not step.get("file"):
         return "Choose the script file to run."
     if a == "Random Delay" and (step.get("min_ms") or 0) > (step.get("max_ms") or 0):
         return "Min ms must not be more than Max ms."
-    if n_steps is not None:
-        for key in ("goto", "else_goto"):
-            v = step.get(key)
-            if v and not 1 <= v <= n_steps:
-                return f"Step {v} does not exist."
+    if a in ("Set Variable", "Increment Variable", "If Variable", "While Variable", "Read Text"):
+        if not NAME_RE.match(str(step.get("var") or "")):
+            return "Enter a variable name (letters, digits and _)."
+    if a in ("If Variable", "While Variable") and step.get("op", "=") not in COMPARE_OPS:
+        return f"Unknown comparison '{step.get('op')}'."
+    lab = str(step.get("label") or "").strip()
+    if lab and (not LABEL_RE.match(lab) or lab.isdigit()):
+        return "Labels use letters, digits, _ and - and must not be just a number."
+    if steps is not None:
+        labels = label_map(steps)
+        w = step.get("wait") or {}
+        for v in [step.get(k) for k in TARGET_KEYS] + [w.get("goto") if w.get("on_timeout") == "goto" else None]:
+            try:
+                resolve_target(steps, v, labels)
+            except ValueError as e:
+                return str(e)
     return None
 
 
@@ -427,6 +629,12 @@ def describe_wait(w):
     return ""
 
 
+def _tgt(v, blank="?"):
+    if v in (None, ""):
+        return blank
+    return f"step {v}" if isinstance(v, int) else f"'{v}'"
+
+
 def describe_action(step):
     a = step["action"]
     img = image_stem(step.get("image")) or "?"
@@ -443,11 +651,11 @@ def describe_action(step):
     if a == "Wait for Image to Vanish":
         return f"Until {img} disappears, max {step.get('timeout_s', 10)} s"
     if a in ("If Image Found", "If Image Not Found"):
-        return f"{img} then {step.get('goto') or 'next'}, else {step.get('else_goto') or 'next'}"
+        return f"{img} then {_tgt(step.get('goto'), 'next')}, else {_tgt(step.get('else_goto'), 'next')}"
     if a == "Wait for Pixel Color":
         return f"Until {step.get('color')}, max {step.get('timeout_s', 10)} s"
     if a == "If Pixel Color":
-        return f"{step.get('color')} then {step.get('goto') or 'next'}, else {step.get('else_goto') or 'next'}"
+        return f"{step.get('color')} then {_tgt(step.get('goto'), 'next')}, else {_tgt(step.get('else_goto'), 'next')}"
     if a == "Wait for Screen to Settle":
         return f"Still {step.get('stable_ms', 800)} ms, max {step.get('timeout_s', 10)} s"
     if a == "Delay":
@@ -455,9 +663,31 @@ def describe_action(step):
     if a == "Random Delay":
         return f"Wait {step.get('min_ms', 0)} to {step.get('max_ms', 0)} ms"
     if a == "Go to Step":
-        return f"Jump to step {step.get('goto')}"
+        return f"Jump to {_tgt(step.get('goto'))}"
+    if a == "Call Subroutine":
+        return f"Call {_tgt(step.get('goto'))}"
+    if a == "Read Text":
+        where = format_region(step.get("region")) or "whole screen"
+        return f"Read {step.get('mode') or 'text'} into {{{step.get('var')}}} from {where}"
+    if a == "Set Variable":
+        return f"{{{step.get('var')}}} = \"{_short(step.get('value'), 30)}\""
+    if a == "Increment Variable":
+        amt = int(step.get("amount") or 0)
+        return f"{{{step.get('var')}}} {'+' if amt >= 0 else '-'} {abs(amt)}"
+    if a == "If Variable":
+        return (f"{{{step.get('var')}}} {step.get('op', '=')} \"{_short(step.get('value'), 16)}\" "
+                f"then {_tgt(step.get('goto'), 'next')}, else {_tgt(step.get('else_goto'), 'next')}")
+    if a in WHILE_ACTIONS:
+        if a == "While Variable":
+            cond = f"{{{step.get('var')}}} {step.get('op', '=')} \"{_short(step.get('value'), 16)}\""
+        elif a == "While Pixel Color":
+            cond = f"pixel is {step.get('color')}"
+        else:
+            cond = f"{img} {'is' if a == 'While Image Found' else 'is not'} on screen"
+        cap = int(step.get("max_loops") or 0)
+        return f"While {cond}" + (f", max {cap} loops" if cap else "")
     if a == "Loop Back":
-        return f"Back to {step.get('goto')}, {step.get('times', 1)} times"
+        return f"Back to {_tgt(step.get('goto'))}, {step.get('times', 1)} times"
     if a == "Run Script File":
         return _short(str(step.get("file", "")).replace("\\", "/").split("/")[-1])
     if a == "Show Notification":

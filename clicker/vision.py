@@ -135,23 +135,16 @@ class Match(namedtuple("Match", "x y w h score")):
         return self.x, self.y, self.w, self.h
 
 
-def match_in(hay, needle, confidence=0.9, grayscale=False, ox=0, oy=0):
-    if needle is None or hay is None:
-        return None
-    nh, nw = needle.shape[:2]
-    hh, hw = hay.shape[:2]
+def _match_once(h2, n2, ox, oy):
+    nh, nw = n2.shape[:2]
+    hh, hw = h2.shape[:2]
     if nh > hh or nw > hw or nh == 0 or nw == 0:
         return None
-    if grayscale:
-        h2 = cv2.cvtColor(hay, cv2.COLOR_BGR2GRAY)
-        n2 = cv2.cvtColor(needle, cv2.COLOR_BGR2GRAY)
-    else:
-        h2, n2 = hay, needle
-    if float(n2.std()) < 1e-3:
-        # Flat single color template: normalized correlation is undefined.
+    channels = 1 if n2.ndim == 2 else n2.shape[2]
+    if float(n2.reshape(-1, channels).std(axis=0).max()) < 1e-3:
+        # Flat single color template (in every channel): normalized correlation is undefined.
         res = cv2.matchTemplate(h2, n2, cv2.TM_SQDIFF)
         min_val, _, min_loc, _ = cv2.minMaxLoc(res)
-        channels = 1 if n2.ndim == 2 else n2.shape[2]
         rms = (min_val / (nw * nh * channels)) ** 0.5
         score, loc = 1.0 - rms / 255.0, min_loc
     else:
@@ -159,14 +152,138 @@ def match_in(hay, needle, confidence=0.9, grayscale=False, ox=0, oy=0):
         res = np.nan_to_num(res, nan=-1.0, posinf=-1.0, neginf=-1.0)
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
         score, loc = float(max_val), max_loc
-    if score < confidence:
-        return None
     return Match(int(loc[0] + ox), int(loc[1] + oy), int(nw), int(nh), round(float(score), 3))
 
 
-def find_image(needle, region=None, confidence=0.9, grayscale=False):
+_scaled_cache = {}
+_scaled_lock = threading.Lock()
+
+
+def scaled(img, factor):
+    """Resize a template, cached so repeated polls stay cheap."""
+    if abs(factor - 1.0) < 1e-3:
+        return img
+    key = (id(img), round(factor, 3))
+    with _scaled_lock:
+        hit = _scaled_cache.get(key)
+        if hit is not None and hit[0] is img:
+            return hit[1]
+    h, w = img.shape[:2]
+    nw, nh = max(1, int(round(w * factor))), max(1, int(round(h * factor)))
+    out = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_CUBIC)
+    with _scaled_lock:
+        if len(_scaled_cache) > 256:
+            _scaled_cache.clear()
+        _scaled_cache[key] = (img, out)
+    return out
+
+
+def match_in(hay, needle, confidence=0.9, grayscale=False, ox=0, oy=0, scales=None):
+    """Best match of needle in hay, or None if below confidence.
+
+    scales: template size factors to try in order, e.g. [1.0, 1.25]. The first
+    factor that clears the confidence wins, so put the most likely one first.
+    """
+    if needle is None or hay is None:
+        return None
+    if grayscale:
+        hay = cv2.cvtColor(hay, cv2.COLOR_BGR2GRAY)
+        needle = cv2.cvtColor(needle, cv2.COLOR_BGR2GRAY)
+    for f in scales or (1.0,):
+        n2 = scaled(needle, float(f))
+        if min(n2.shape[:2]) < 4 and abs(f - 1.0) > 1e-3:
+            continue
+        m = _match_once(hay, n2, ox, oy)
+        if m is not None and m.score >= confidence:
+            return m
+    return None
+
+
+def scale_candidates(factor=1.0, search=False):
+    """Template scale factors to try: the expected one first, then a search band."""
+    base = round(float(factor or 1.0), 3)
+    out = [base]
+    extra = [1.0]
+    if search:
+        extra += [base * f for f in (0.9, 1.1, 0.8, 1.25, 0.75, 1.5, 0.67)]
+    for f in extra:
+        f = round(f, 3)
+        if f not in out:
+            out.append(f)
+    return out
+
+
+def find_image(needle, region=None, confidence=0.9, grayscale=False, scales=None):
     hay, (ox, oy) = capture(region)
-    return match_in(hay, needle, confidence, grayscale, ox, oy)
+    return match_in(hay, needle, confidence, grayscale, ox, oy, scales)
+
+
+# ---------------------------------------------------------------- text (OCR)
+
+class OcrUnavailable(RuntimeError):
+    pass
+
+
+def _tesseract():
+    try:
+        import pytesseract
+    except ImportError:
+        raise OcrUnavailable("Reading text needs the pytesseract package (pip install pytesseract).")
+    if sys.platform == "win32" and not getattr(_tesseract, "_located", False):
+        import os
+        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
+            exe = os.path.join(base, "Tesseract-OCR", "tesseract.exe")
+            if os.path.isfile(exe):
+                pytesseract.pytesseract.tesseract_cmd = exe
+                break
+        _tesseract._located = True
+    return pytesseract
+
+
+def ocr_problem():
+    """None when text reading works, else a message saying what is missing."""
+    try:
+        pt = _tesseract()
+        pt.get_tesseract_version()
+        return None
+    except OcrUnavailable as e:
+        return str(e)
+    except Exception:
+        return ("Tesseract OCR is not installed. Install it from "
+                "https://github.com/UB-Mannheim/tesseract/wiki (Windows) or your package manager.")
+
+
+def ocr_image(img, mode="text"):
+    """Read text from a BGR image. mode 'number' keeps digits, sign and decimal point."""
+    pt = _tesseract()
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    h = gray.shape[0]
+    if h < 40:  # small UI text reads far better enlarged
+        f = 40.0 / max(1, h)
+        gray = cv2.resize(gray, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+    if float(gray.mean()) < 110:  # light text on dark background
+        gray = 255 - gray
+    config = "--psm 7" if gray.shape[0] < 120 else "--psm 6"
+    if mode == "number":
+        config += " -c tessedit_char_whitelist=0123456789.,-"
+    try:
+        text = pt.image_to_string(gray, config=config)
+    except pt.TesseractNotFoundError:
+        raise OcrUnavailable("Tesseract OCR is not installed. Install it from "
+                             "https://github.com/UB-Mannheim/tesseract/wiki (Windows) or your package manager.")
+    text = " ".join(text.split())
+    if mode == "number":
+        import re
+        m = re.search(r"-?\d[\d,]*(?:\.\d+)?", text)
+        text = m.group(0).replace(",", "") if m else ""
+    return text
+
+
+def read_text(region=None, mode="text"):
+    img, _ = capture(region)
+    return ocr_image(img, mode)
 
 
 def frame_change(a, b):
@@ -207,7 +324,7 @@ class Checker:
         region = self.c.get("region") or None
         if k in ("image_appears", "image_vanishes"):
             m = find_image(self._needle(), region, float(self.c.get("confidence") or 0.9),
-                           bool(self.c.get("grayscale")))
+                           bool(self.c.get("grayscale")), self.c.get("scales"))
             if k == "image_appears":
                 return m is not None, m
             return m is None, None

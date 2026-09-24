@@ -206,7 +206,7 @@ class ImportTab(tk.Frame):
             tags = ["odd" if i % 2 else "even"]
             if model.is_screen_step(st):
                 tags.append("screen")
-            if model.check_step(st, len(s["steps"])):
+            if model.check_step(st, s["steps"]):
                 tags.append("error")
             self.tree.insert("", "end", iid=str(i), tags=tags, values=(i + 1, lbl, waits, timeout))
 
