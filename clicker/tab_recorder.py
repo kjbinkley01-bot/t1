@@ -186,7 +186,22 @@ class RecorderTab(tk.Frame):
             self.v_count.set(str(self.recorder.count))
             secs = int(time.monotonic() - self.recorder.started)
             self.v_elapsed.set(f"{secs // 60:02d}:{secs % 60:02d}")
-        self.after(250, self._tick)
+        self._tick_job = self.after(250, self._tick)
+
+    def destroy(self):
+        job = getattr(self, "_tick_job", None)
+        if job:
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+        super().destroy()
+
+    def adopt(self, recorder, events, path, dirty):
+        """Take over the recording from the tab this one replaces (theme change)."""
+        self.recorder = recorder
+        self.events, self.path, self.dirty = events, path, dirty
+        self._show_counts()
 
     def _show_counts(self):
         self.v_count.set(str(len(self.events)))

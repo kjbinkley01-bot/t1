@@ -6,8 +6,8 @@ import tkinter as tk
 import numpy as np
 from PIL import Image, ImageTk
 
-from . import inputs, triggers, vision
-from .theme import C, F, Button, combo, dark_titlebar, entry, frame, label, text_box
+from . import anim, inputs, triggers, vision
+from .theme import C, F, S, Button, combo, dark_titlebar, entry, frame, label, pill_image, px, text_box
 
 
 # ---------------------------------------------------------------- region picker
@@ -109,79 +109,224 @@ def select_region(root, callback, prompt="Drag to select an area. Esc cancels.")
 
 # ---------------------------------------------------------------- highlight
 
-def flash(root, rect, ms=900, color=None):
-    x, y, w, h = (int(v) for v in rect)
-    pad = 3
-    win = tk.Toplevel(root)
-    win.overrideredirect(True)
-    win.attributes("-topmost", True)
-    win.geometry(f"{w + pad * 2}x{h + pad * 2}+{x - pad}+{y - pad}")
-    key = "#ff00fe"
-    if sys.platform == "win32":
-        win.configure(bg=key)
-        win.attributes("-transparentcolor", key)
-    else:
-        win.configure(bg=key)
+class Flash:
+    """One reusable outline window that marks where a match was found.
+
+    Scripts can report hundreds of matches a second; moving one window is far
+    cheaper than creating and destroying a window for each.
+    """
+
+    PAD = 3
+    KEY = "#ff00fe"
+
+    def __init__(self, root):
+        self.root = root
+        self.win = None
+        self.cv = None
+        self.rect = None
+        self.job = None
+
+    def _make(self):
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.configure(bg=self.KEY)
+        if sys.platform == "win32":
+            win.attributes("-transparentcolor", self.KEY)
+        else:
+            try:
+                win.attributes("-alpha", 0.5)
+            except tk.TclError:
+                pass
         try:
-            win.attributes("-alpha", 0.5)
+            win.attributes("-disabled", True)
         except tk.TclError:
             pass
-    cv = tk.Canvas(win, width=w + pad * 2, height=h + pad * 2, bg=key, highlightthickness=0, bd=0)
-    cv.pack()
-    cv.create_rectangle(1, 1, w + pad * 2 - 2, h + pad * 2 - 2, outline=color or C["accent"], width=3)
-    try:
-        win.attributes("-disabled", True)
-    except tk.TclError:
-        pass
-    win.after(ms, win.destroy)
+        self.cv = tk.Canvas(win, bg=self.KEY, highlightthickness=0, bd=0)
+        self.cv.pack(fill="both", expand=True)
+        self.rect = self.cv.create_rectangle(0, 0, 0, 0, outline=C["accent"], width=3)
+        self.win = win
+
+    def show(self, rect, ms=700, color=None):
+        try:
+            if self.win is None or not self.win.winfo_exists():
+                self._make()
+            x, y, w, h = (int(v) for v in rect)
+            p = self.PAD
+            W, H = w + p * 2, h + p * 2
+            self.win.geometry(f"{W}x{H}+{x - p}+{y - p}")
+            self.cv.coords(self.rect, 1, 1, W - 2, H - 2)
+            self.cv.itemconfigure(self.rect, outline=color or C["accent"])
+            self.win.deiconify()
+            if self.job:
+                self.root.after_cancel(self.job)
+            self.job = self.root.after(ms, self.hide)
+        except tk.TclError:
+            self.win = None
+
+    def hide(self):
+        self.job = None
+        try:
+            if self.win is not None:
+                self.win.withdraw()
+        except tk.TclError:
+            self.win = None
+
+
+def flash(root, rect, ms=900, color=None):
+    """Kept for callers that flash once; shares the app's Flash window when there is one."""
+    f = getattr(root, "_clicker_flash", None)
+    if f is None:
+        f = root._clicker_flash = Flash(root)
+    f.show(rect, ms, color)
+
+
+# ---------------------------------------------------------------- glass tab bar
+
+class GlassTabs(tk.Canvas):
+    """Tab labels over a glass capsule that slides to the selected tab."""
+
+    def __init__(self, parent, tabs, on_select):
+        self.tabs = list(tabs)
+        self.on_select = on_select
+        self.padx = px(16)
+        self.h = F.body.metrics("linespace") + px(22)
+        self.lens_h = self.h - px(10)
+        super().__init__(parent, bg=C["bar"], height=self.h, highlightthickness=0, bd=0)
+        x = px(2)
+        self.slots = {}
+        for key, text in self.tabs:
+            w = F.body.measure(text) + 2 * self.padx
+            self.slots[key] = (x, w)
+            x += w + px(4)
+        self.configure(width=x)
+        self.lens = self.create_image(0, self.h // 2, anchor="w")
+        self.texts = {}
+        for key, text in self.tabs:
+            x0, w = self.slots[key]
+            t = self.create_text(x0 + w // 2, self.h // 2, text=text, fill=C["muted"], font=F.body,
+                                 tags=("tab", key))
+            hit = self.create_rectangle(x0, 0, x0 + w, self.h, outline="", fill="", tags=("tab", key))
+            self.tag_raise(t)
+            self.texts[key] = t
+            for item in (t, hit):
+                self.tag_bind(item, "<Button-1>", lambda e, k=key: self.on_select(k))
+                self.tag_bind(item, "<Enter>", lambda e, k=key: self._hover(k, True))
+                self.tag_bind(item, "<Leave>", lambda e, k=key: self._hover(k, False))
+        self.configure(cursor="hand2")
+        self.current = None
+        self._pos = None  # (x, w) of the lens now
+
+    def _lens_img(self, w):
+        w = int(w) // 2 * 2  # even widths only, so animation frames hit the cache
+        return pill_image(w, self.lens_h, C["btn"], C["btn_bd"], C["rim_hi"], C["bar"])
+
+    def _place_lens(self, x, w):
+        img = self._lens_img(w)
+        self._img = img
+        self.itemconfigure(self.lens, image=img)
+        self.coords(self.lens, x, self.h // 2)
+        self._pos = (x, w)
+
+    def _hover(self, key, on):
+        if key != self.current:
+            self.itemconfigure(self.texts[key], fill=C["text"] if on else C["muted"])
+
+    def select(self, key, animate=True):
+        if key not in self.slots:
+            return
+        self.current = key
+        for k, t in self.texts.items():
+            self.itemconfigure(t, fill=C["text"] if k == key else C["muted"])
+        tx, tw = self.slots[key]
+        if self._pos is None or not animate:
+            self._place_lens(tx, tw)
+            return
+        sx, sw = self._pos
+
+        def step(t):
+            self._place_lens(sx + (tx - sx) * t, sw + (tw - sw) * t)
+        anim.Tween(self, 220, step, key="lens")
 
 
 # ---------------------------------------------------------------- toasts
 
 class Toast:
+    """A small notice in the bottom right corner. Glass themes slide and fade it in."""
+
     def __init__(self, root):
         self.root = root
         self.win = None
         self.job = None
 
     def show(self, title, message, ms=5000, accent=None):
-        self.hide()
+        self.hide(animate=False)
         win = tk.Toplevel(self.root)
         self.win = win
+        win.withdraw()
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.configure(bg=C["border"])
         body = frame(win, bg=C["panel"])
         body.pack(padx=1, pady=1)
-        bar = tk.Frame(body, bg=accent or C["accent"], width=3)
+        bar = tk.Frame(body, bg=accent or C["accent"], width=px(3))
         bar.pack(side="left", fill="y")
         inner = frame(body, bg=C["panel"])
-        inner.pack(side="left", padx=14, pady=10)
+        inner.pack(side="left", padx=px(14), pady=px(10))
         label(inner, title, font=F.bold).pack(anchor="w")
         if message:
-            label(inner, message, muted=True, wraplength=320, justify="left").pack(anchor="w", pady=(2, 0))
+            label(inner, message, muted=True, wraplength=px(320), justify="left").pack(anchor="w", pady=(2, 0))
         win.update_idletasks()
         _, _, sw, sh = vision.primary_screen()
         ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
-        win.geometry(f"+{sw - ww - 24}+{sh - wh - 72}")
+        x, y = sw - ww - px(24), sh - wh - px(72)
         for w in (win, body, inner) + tuple(inner.winfo_children()):
             w.bind("<Button-1>", lambda e: self.hide())
+        if S["rounded"] and anim.motion["on"]:
+            rise = px(14)
+            win.geometry(f"+{x}+{y + rise}")
+            self._alpha(win, 0.0)
+            win.deiconify()
+
+            def step(t):
+                if win.winfo_exists():
+                    win.geometry(f"+{x}+{int(y + rise * (1 - t))}")
+                    self._alpha(win, t)
+            anim.Tween(win, 200, step, key="toast")
+        else:
+            win.geometry(f"+{x}+{y}")
+            win.deiconify()
         if ms:
             self.job = self.root.after(ms, self.hide)
 
-    def hide(self):
+    @staticmethod
+    def _alpha(win, a):
+        try:
+            win.attributes("-alpha", max(0.0, min(1.0, a)))
+        except tk.TclError:
+            pass
+
+    def hide(self, animate=True):
         if self.job:
             try:
                 self.root.after_cancel(self.job)
             except Exception:
                 pass
             self.job = None
-        if self.win:
+        win, self.win = self.win, None
+        if not win:
+            return
+
+        def close():
             try:
-                self.win.destroy()
+                win.destroy()
             except tk.TclError:
                 pass
-            self.win = None
+        if animate and S["rounded"] and anim.motion["on"]:
+            anim.Tween(win, 150, lambda t: win.winfo_exists() and self._alpha(win, 1 - t), done=close, key="toast")
+        else:
+            close()
 
 
 def countdown(root, toast, seconds, title, on_done):

@@ -1,22 +1,28 @@
 """Main window: tab bar, status bar, hotkeys, jobs, and trigger monitoring."""
 
+import datetime
+import gc
+import json
 import os
 import queue
 import sys
 import threading
 import tkinter as tk
+import traceback
 import webbrowser
 from tkinter import messagebox
 
-from . import inputs, model, runlog, storage, ui, updates, vision
+from . import anim, inputs, model, runlog, storage, theme, ui, updates, vision
 from .hotkeys import HotkeyManager
 from .runner import Runner
 from .tab_actions import ActionTab
 from .tab_import import ImportTab
 from .tab_recorder import RecorderTab
 from .tab_triggers import TriggersTab
-from .theme import C, F, Button, check, entry, frame, label
+from .theme import C, F, Button, check, combo, entry, frame, label, px
 from .triggers import TriggerEngine
+
+AUTOSAVE_MS = 60_000
 
 TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"),
         ("triggers", "Screen Triggers"), ("import", "Import Script")]
@@ -74,29 +80,76 @@ class Ctx:
         self.app.post("app", "run_script", path)
 
 
+class CursorSampler:
+    """Reads the cursor position and the pixel under it on a background thread.
+
+    Grabbing the screen can take tens of milliseconds on Windows; doing it on
+    the UI thread made the whole window stutter, especially while resizing.
+    """
+
+    def __init__(self, post, interval=0.12):
+        self.post = post
+        self.interval = interval
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._main, daemon=True, name="cursor-sampler")
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def _main(self):
+        last = None
+        while not self.stop_event.wait(self.interval):
+            try:
+                x, y = inputs.position()
+                hexc = vision.rgb_hex(vision.pixel(x, y))
+            except Exception:
+                continue
+            if (x, y, hexc) != last:
+                last = (x, y, hexc)
+                self.post("app", "cursor", last)
+        vision.release_thread()
+
+
+# events where only the newest one matters; older ones are dropped when the queue backs up
+COALESCE = {("script", "step"), ("script", "log"), ("script", "state"), ("script", "run"),
+            ("script", "highlight"), ("app", "cursor"), ("trigger", "highlight")}
+
+
 class App:
     def __init__(self, root):
         self.root = root
-        from . import theme
+        # Background threads (scripts, triggers, the cursor sampler) share Python's lock with
+        # the window. Handing it over every 1 ms instead of 5 ms keeps the window responsive
+        # while a busy script runs, at no measurable cost.
+        sys.setswitchinterval(0.001)
+        self.settings = storage.load_settings()
+        theme.use(self.settings.get("theme", "classic"))
+        anim.motion["on"] = not self.settings.get("reduce_motion", False)
         theme.init(root)
         root.title(model.APP_NAME)
-        root.geometry("1180x960")
-        root.minsize(1060, 760)
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f"{min(px(1180), sw - 40)}x{min(px(960), sh - 80)}")
         self.q = queue.Queue()
-        self.settings = storage.load_settings()
         self.last_inputs = {}
         self.job = None
         self.job_owner = None
         self._held_job = None
         self._hid_window = False
         self._state_sig = None
+        self._state_shown = None
         self.hotkey_displays = {}
         self.capture_action = None
         self.toast = ui.Toast(root)
+        self.flasher = ui.Flash(root)
         self.current_tab = None
         self.last_log_dir = None
         self.update_info = None
+        self._rebuilding = False
         self._set_icon()
+        self._install_error_handlers()
 
         try:
             self.rules, self.trigger_assets = storage.load_triggers(storage.triggers_path())
@@ -107,6 +160,25 @@ class App:
         self.hotkeys = HotkeyManager(lambda kind, payload: self.post("hotkey", kind, payload),
                                      self.settings["hotkeys"])
 
+        self._build_ui()
+        self._bind_global_keys()
+        self.show_tab("actions", animate=False)
+
+        self.hotkeys.start()
+        self.sampler = CursorSampler(self.post)
+        self.sampler.start()
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.after(50, lambda: ui.dark_titlebar(root))
+        root.after(40, self._poll)
+        root.after(2500, self.check_updates)
+        root.after(600, self._offer_recovery)
+        root.after(AUTOSAVE_MS, self._autosave)
+        self.refresh_states()
+
+    def _build_ui(self):
+        """Create the window's widgets for the active theme (also used when the theme changes)."""
+        self.hotkey_displays = {}
+        self._state_shown = None
         self._build_chrome()
         self.action_tab = ActionTab(self.content, self)
         self.recorder_tab = RecorderTab(self.content, self)
@@ -116,90 +188,329 @@ class App:
                      "triggers": self.triggers_tab, "import": self.import_tab}
         for t in self.tabs.values():
             t.grid(row=0, column=0, sticky="nsew")
-        self.show_tab("actions")
         self.refresh_hotkey_displays()
+        self._fit_minsize()
 
-        self.hotkeys.start()
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
-        root.after(50, lambda: ui.dark_titlebar(root))
-        root.after(40, self._poll)
-        root.after(200, self._status_tick)
-        root.after(2500, self.check_updates)
-        self.refresh_states()
+    def _bind_global_keys(self):
+        mods = ["Control"] + (["Command"] if sys.platform == "darwin" else [])
+        for m in mods:
+            self.root.bind_all(f"<{m}-z>", lambda e: self.action_tab._key_undo(e))
+            for seq in (f"<{m}-y>", f"<{m}-Shift-Z>", f"<{m}-Z>"):
+                self.root.bind_all(seq, lambda e: self.action_tab._key_redo(e))
+
+    # ------------------------------------------------------------ themes
+
+    def show_theme_menu(self):
+        m = tk.Menu(self.root, tearoff=0, bg=C["panel"], fg=C["text"], activebackground=C["sel"],
+                    activeforeground=C["sel_fg"], selectcolor=C["accent"], bd=0, font=F.body)
+        var = tk.StringVar(value=theme.S["name"])
+        for key, text in theme.THEMES:
+            m.add_radiobutton(label=text, value=key, variable=var, command=lambda k=key: self.set_theme(k))
+        m.add_separator()
+        motion = tk.BooleanVar(value=not anim.motion["on"])
+        m.add_checkbutton(label="Reduce motion", variable=motion,
+                          command=lambda: self.set_reduce_motion(motion.get()))
+        self._theme_menu_vars = (var, motion)
+        w = self.lnk_style
+        try:
+            m.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height())
+        finally:
+            m.grab_release()
+
+    def set_reduce_motion(self, on):
+        anim.motion["on"] = not on
+        self.settings["reduce_motion"] = bool(on)
+        self.save_settings()
+
+    def set_theme(self, name):
+        if name == theme.S["name"]:
+            return
+        if self.job_running() or self.recorder_tab.recorder.active:
+            self.set_status("Stop the running script or recording before changing the style.", error=True)
+            return
+        self.settings["theme"] = name
+        self.save_settings()
+
+        def swap():
+            theme.use(name)
+            self.rebuild_ui()
+        self._fade(swap)
+
+    def _fade(self, middle):
+        """Dip the window's opacity, run middle(), and bring it back (skipped with reduced motion)."""
+        root = self.root
+
+        def alpha(a):
+            try:
+                root.attributes("-alpha", a)
+            except tk.TclError:
+                pass
+        if not anim.motion["on"]:
+            middle()
+            return
+
+        def back():
+            anim.Tween(root, 180, lambda t: alpha(0.35 + 0.65 * t), key="fade")
+        anim.Tween(root, 120, lambda t: alpha(1 - 0.65 * t), key="fade",
+                   done=lambda: (middle(), root.update_idletasks(), back()))
+
+    def _capture_state(self):
+        a, r, i = self.action_tab, self.recorder_tab, self.import_tab
+        a._sync_settings()
+        try:
+            r._read_options()  # saved to settings, so the new tab starts with them
+        except ValueError:
+            pass
+        return {
+            "tab": self.current_tab,
+            "action": (a.script, a.assets, a.path, a.dirty, a.history, a._selection()),
+            "action_vars": {k: getattr(a, k).get() for k in ("v_script_repeat", "v_speed", "v_rand", "v_hide")},
+            "rec": (r.recorder, r.events, r.path, r.dirty),
+            "imp": (i.script, i.assets, i.path),
+            "trig": self.triggers_tab.sel_id,
+        }
+
+    def _restore_state(self, st):
+        a = self.action_tab
+        script, assets, path, dirty, history, sel = st["action"]
+        a.set_script(script, assets, path)
+        a.dirty = dirty
+        a.history = history
+        for k, v in st["action_vars"].items():
+            getattr(a, k).set(v)
+        a._update_undo_buttons()
+        a.refresh_list(sel or None)
+        self.recorder_tab.adopt(*st["rec"])
+        script, assets, path = st["imp"]
+        if script is not None:
+            self.import_tab.show(script, assets, path)
+        if st["trig"]:
+            try:
+                self.triggers_tab.select_rule(st["trig"])
+            except Exception:
+                pass
+
+    def rebuild_ui(self):
+        """Recreate every widget for the active theme, keeping all open work."""
+        self._rebuilding = True
+        try:
+            st = self._capture_state()
+            self.toast.hide(animate=False)
+            for w in self.root.winfo_children():
+                w.destroy()
+            # free the old widgets' Tk variables now, on this thread; left to the garbage
+            # collector they could be freed on a worker thread, which Tk does not allow
+            gc.collect()
+            self.flasher = ui.Flash(self.root)
+            self.toast = ui.Toast(self.root)
+            theme.init(self.root)
+            self._build_ui()
+            self._restore_state(st)
+            self.show_tab(st["tab"] or "actions", animate=False)
+            self.refresh_states()
+            ui.dark_titlebar(self.root)
+            self.set_status(f"Style: {theme.THEME_LABEL[theme.S['name']]}")
+        finally:
+            self._rebuilding = False
+
+    # ------------------------------------------------------------ errors and recovery
+
+    def _errors_path(self):
+        return os.path.join(storage.data_dir(), "errors.log")
+
+    def _install_error_handlers(self):
+        self.root.report_callback_exception = self._report_error
+        try:
+            import faulthandler
+            self._fault_file = open(os.path.join(storage.data_dir(), "crash.log"), "a")
+            faulthandler.enable(self._fault_file)
+        except Exception:
+            pass
+        prev = threading.excepthook
+
+        def hook(args):
+            self._log_error(args.exc_type, args.exc_value, args.exc_traceback, f"thread {args.thread.name}")
+            prev(args)
+        threading.excepthook = hook
+
+    def _log_error(self, exc, val, tb, where="UI"):
+        try:
+            text = "".join(traceback.format_exception(exc, val, tb))
+            with open(self._errors_path(), "a", encoding="utf-8") as f:
+                f.write(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S} ({where}, Clicker {model.APP_VERSION})\n")
+                f.write(text + "\n")
+        except Exception:
+            pass
+
+    def _report_error(self, exc, val, tb):
+        """A button or timer crashed: keep the app alive, log it, and tell the user once."""
+        self._log_error(exc, val, tb)
+        traceback.print_exception(exc, val, tb)
+        try:
+            self.set_status(f"Something went wrong ({val}). Details were saved to errors.log.", error=True)
+        except Exception:
+            pass
+
+    def _autosave_paths(self):
+        d = storage.data_dir()
+        return os.path.join(d, "autosave.clk"), os.path.join(d, "autosave.json")
+
+    def _autosave(self):
+        """Every minute, quietly save unsaved Action Script work so a crash can't lose it."""
+        try:
+            a = self.action_tab
+            if a.dirty and a.script["steps"] and not self._rebuilding:
+                a._sync_settings()
+                script, assets = model.copy_script(a.script), a.assets.copy()
+                clk, meta = self._autosave_paths()
+                info = {"path": a.path, "time": datetime.datetime.now().isoformat(timespec="seconds"),
+                        "steps": len(script["steps"])}
+
+                def work():
+                    try:
+                        storage.save_script(clk, script, assets)
+                        with open(meta, "w", encoding="utf-8") as f:
+                            json.dump(info, f)
+                    except Exception:
+                        pass
+                threading.Thread(target=work, daemon=True, name="autosave").start()
+        finally:
+            self.root.after(AUTOSAVE_MS, self._autosave)
+
+    def _clear_autosave(self):
+        for p in self._autosave_paths():
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+    def _offer_recovery(self):
+        clk, meta = self._autosave_paths()
+        if not os.path.exists(clk):
+            return
+        try:
+            with open(meta, encoding="utf-8") as f:
+                info = json.load(f)
+        except (OSError, ValueError):
+            info = {}
+        when = str(info.get("time", "")).replace("T", " ")
+        name = os.path.basename(info.get("path") or "") or "an unsaved script"
+        if messagebox.askyesno("Recover unsaved work?",
+                               f"Clicker closed without saving {name} ({info.get('steps', '?')} steps, "
+                               f"last autosaved {when or 'recently'}).\n\nOpen the recovered copy?",
+                               parent=self.root):
+            try:
+                script, assets = storage.load_script(clk)
+                self.action_tab.set_script(script, assets, None)
+                self.action_tab.dirty = True
+                self.show_tab("actions")
+                self.set_status("Recovered your unsaved script. Save it to keep it.")
+            except Exception as e:
+                self.set_status(f"Could not recover the script: {e}", error=True)
+        self._clear_autosave()
+
+    def _fit_minsize(self):
+        """Never let the window shrink below what its contents need (no clipped text)."""
+        self.root.update_idletasks()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        need_w = max(t.winfo_reqwidth() for t in self.tabs.values()) + px(8)
+        need_h = max(t.winfo_reqheight() for t in self.tabs.values()) + self.top.winfo_reqheight() \
+            + self.status.winfo_reqheight() + px(4)
+        w, h = min(need_w, sw - 40), min(need_h, sh - 80)
+        self.root.minsize(w, min(h, px(760)))
+        cur_w, cur_h = self.root.winfo_width(), self.root.winfo_height()
+        if cur_w > 1 and (cur_w < w or cur_h < min(h, px(760))):
+            self.root.geometry(f"{max(cur_w, w)}x{max(cur_h, min(h, px(760)))}")
 
     # ------------------------------------------------------------ chrome
 
     def _build_chrome(self):
         top = tk.Frame(self.root, bg=C["bar"])
         top.pack(fill="x")
+        self.top = top
         brand = frame(top, bg=C["bar"])
-        brand.pack(side="left", padx=(16, 18))
-        logo = tk.Canvas(brand, width=16, height=16, bg=C["bar"], highlightthickness=0)
-        logo.create_polygon(3, 2, 8, 15, 10, 9, 15, 7, fill="", outline=C["accent"], width=2)
-        logo.pack(side="left", padx=(0, 8))
+        brand.pack(side="left", padx=(px(16), px(18)))
+        logo = tk.Canvas(brand, width=px(16), height=px(16), bg=C["bar"], highlightthickness=0)
+        k = px(16) / 16.0
+        logo.create_polygon(*(v * k for v in (3, 2, 8, 15, 10, 9, 15, 7)), fill="", outline=C["accent"],
+                            width=max(2, px(2)))
+        logo.pack(side="left", padx=(0, px(8)))
         label(brand, model.APP_NAME, bg=C["bar"], font=F.bold).pack(side="left")
         self.tab_labels = {}
         self.tab_lines = {}
-        for key, text in TABS:
-            cell = frame(top, bg=C["bar"])
-            cell.pack(side="left")
-            lbl = tk.Label(cell, text=text, bg=C["bar"], fg=C["muted"], font=F.body, padx=14, pady=10,
+        self.glass_tabs = None
+        if theme.S["rounded"]:
+            self.glass_tabs = ui.GlassTabs(top, TABS, self.show_tab)
+            self.glass_tabs.pack(side="left", pady=px(4))
+        else:
+            for key, text in TABS:
+                cell = frame(top, bg=C["bar"])
+                cell.pack(side="left")
+                lbl = tk.Label(cell, text=text, bg=C["bar"], fg=C["muted"], font=F.body, padx=px(14), pady=px(10),
+                               cursor="hand2")
+                lbl.pack()
+                line = tk.Frame(cell, bg=C["bar"], height=max(2, px(2)))
+                line.pack(fill="x")
+                lbl.bind("<Button-1>", lambda e, k=key: self.show_tab(k))
+                lbl.bind("<Enter>", lambda e, w=lbl: w.configure(fg=C["text"]))
+                lbl.bind("<Leave>", lambda e, k=key, w=lbl: w.configure(
+                    fg=C["text"] if self.current_tab == k else C["muted"]))
+                self.tab_labels[key] = lbl
+                self.tab_lines[key] = line
+        for text, cmd in (("Settings", self.show_settings), ("Style", self.show_theme_menu)):
+            lnk = tk.Label(top, text=text, bg=C["bar"], fg=C["muted"], font=F.body, padx=px(12), pady=px(10),
                            cursor="hand2")
-            lbl.pack()
-            line = tk.Frame(cell, bg=C["bar"], height=2)
-            line.pack(fill="x")
-            lbl.bind("<Button-1>", lambda e, k=key: self.show_tab(k))
-            lbl.bind("<Enter>", lambda e, w=lbl: w.configure(fg=C["text"]))
-            lbl.bind("<Leave>", lambda e, k=key, w=lbl: w.configure(
-                fg=C["text"] if self.current_tab == k else C["muted"]))
-            self.tab_labels[key] = lbl
-            self.tab_lines[key] = line
-        gear = tk.Label(top, text="Settings", bg=C["bar"], fg=C["muted"], font=F.body, padx=12, pady=10,
-                        cursor="hand2")
-        gear.pack(side="right", padx=(0, 8))
-        gear.bind("<Button-1>", lambda e: self.show_settings())
-        gear.bind("<Enter>", lambda e: gear.configure(fg=C["text"]))
-        gear.bind("<Leave>", lambda e: gear.configure(fg=C["muted"]))
+            lnk.pack(side="right", padx=(0, px(4)))
+            lnk.bind("<Button-1>", lambda e, c=cmd: c())
+            lnk.bind("<Enter>", lambda e, w=lnk: w.configure(fg=C["text"]))
+            lnk.bind("<Leave>", lambda e, w=lnk: w.configure(fg=C["muted"]))
+            if text == "Style":
+                self.lnk_style = lnk
         self.lbl_update = tk.Label(top, text="", bg=C["bar"], fg=C["accent"], font=F.bold, cursor="hand2")
-        self.lbl_update.pack(side="right", padx=8)
+        self.lbl_update.pack(side="right", padx=px(8))
         self.lbl_update.bind("<Button-1>", lambda e: self.open_update())
+        if self.update_info:
+            self.lbl_update.configure(text=f"Update {self.update_info['tag']} available")
         self.lbl_file = label(top, "", bg=C["bar"], muted=True)
-        self.lbl_file.pack(side="right", padx=16)
+        self.lbl_file.pack(side="right", padx=px(16))
         tk.Frame(self.root, bg=C["line"], height=1).pack(fill="x")
 
         self.status = tk.Frame(self.root, bg=C["bar"])
         self.status.pack(side="bottom", fill="x")
         tk.Frame(self.root, bg=C["line"], height=1).pack(side="bottom", fill="x")
         si = frame(self.status, bg=C["bar"])
-        si.pack(fill="x", padx=14, pady=5)
-        self.lbl_cursor = label(si, "", bg=C["bar"], font=F.mono, fg="#9aa0a6")
+        si.pack(fill="x", padx=px(14), pady=px(5))
+        # fixed widths: changing text must not make Tk re-lay out the whole window
+        self.lbl_cursor = label(si, "", bg=C["bar"], font=F.mono, fg=C["status"], width=18, anchor="w")
         self.lbl_cursor.pack(side="left")
-        self.swatch = tk.Frame(si, bg=C["bar"], width=12, height=12, highlightthickness=1,
+        self.swatch = tk.Frame(si, bg=C["bar"], width=px(12), height=px(12), highlightthickness=1,
                                highlightbackground=C["field_bd"])
-        self.swatch.pack(side="left", padx=(18, 6))
-        self.lbl_pixel = label(si, "", bg=C["bar"], font=F.mono, fg="#9aa0a6")
+        self.swatch.pack(side="left", padx=(px(12), px(6)))
+        self.lbl_pixel = label(si, "", bg=C["bar"], font=F.mono, fg=C["status"], width=8, anchor="w")
         self.lbl_pixel.pack(side="left")
         try:
             info = vision.display_info()
             scr = f"Screen {info['width']} x {info['height']} at {info['scale']}%"
         except Exception:
             scr = ""
-        label(si, scr, bg=C["bar"], fg="#9aa0a6").pack(side="left", padx=18)
+        label(si, scr, bg=C["bar"], fg=C["status"]).pack(side="left", padx=px(18))
         self.lbl_state = label(si, "Ready", bg=C["bar"], fg=C["teal"], font=F.bold)
         self.lbl_state.pack(side="right")
-        self.lbl_trig = label(si, "", bg=C["bar"], fg="#9aa0a6")
-        self.lbl_trig.pack(side="right", padx=18)
-        self.lbl_msg = label(si, "", bg=C["bar"], fg="#9aa0a6")
-        self.lbl_msg.pack(side="right", padx=18)
+        self.lbl_trig = label(si, "", bg=C["bar"], fg=C["status"])
+        self.lbl_trig.pack(side="right", padx=px(18))
+        self.lbl_msg = label(si, "", bg=C["bar"], fg=C["status"], anchor="e")
+        self.lbl_msg.pack(side="right", padx=px(18), fill="x", expand=True)
 
         self.content = frame(self.root)
         self.content.pack(fill="both", expand=True)
         self.content.rowconfigure(0, weight=1)
         self.content.columnconfigure(0, weight=1)
 
-    def show_tab(self, key):
+    def show_tab(self, key, animate=True):
         self.current_tab = key
         self.tabs[key].tkraise()
+        if self.glass_tabs:
+            self.glass_tabs.select(key, animate=animate)
         for k in self.tab_labels:
             on = k == key
             self.tab_labels[k].configure(fg=C["text"] if on else C["muted"], font=F.bold if on else F.body)
@@ -214,22 +525,16 @@ class App:
         self.root.title(f"{model.APP_NAME}  |  {text}")
 
     def set_status(self, msg, error=False):
-        self.lbl_msg.configure(text=msg, fg=C["err"] if error else "#9aa0a6")
+        self.lbl_msg.configure(text=msg, fg=C["err"] if error else C["status"])
         if getattr(self, "_msg_job", None):
             self.root.after_cancel(self._msg_job)
         self._msg_job = self.root.after(6000, lambda: self.lbl_msg.configure(text=""))
 
-    def _status_tick(self):
-        try:
-            x, y = inputs.position()
-            self.lbl_cursor.configure(text=f"X {x:>5}   Y {y:>5}")
-            rgb = vision.pixel(x, y)
-            hexc = vision.rgb_hex(rgb)
-            self.swatch.configure(bg=hexc)
-            self.lbl_pixel.configure(text=hexc)
-        except Exception:
-            pass
-        self.root.after(150, self._status_tick)
+    def _show_cursor(self, payload):
+        x, y, hexc = payload
+        self.lbl_cursor.configure(text=f"X {x:>5}   Y {y:>5}")
+        self.swatch.configure(bg=hexc)
+        self.lbl_pixel.configure(text=hexc)
 
     # ------------------------------------------------------------ hotkeys
 
@@ -399,27 +704,41 @@ class App:
             color = C["warn"] if paused else C["teal"]
         else:
             state, color = "Ready", C["teal"]
-        self.lbl_state.configure(text=state, fg=color)
+        if self._state_shown != (state, color):
+            self._state_shown = (state, color)
+            self.lbl_state.configure(text=state, fg=color)
         n = sum(1 for r in self.rules if r.get("enabled"))
         self.lbl_trig.configure(text=(f"Monitoring {n} rule{'s' if n != 1 else ''}" if self.triggers.running
                                       else "Monitoring off"),
-                                fg=C["teal"] if self.triggers.running else "#9aa0a6")
+                                fg=C["teal"] if self.triggers.running else C["status"])
 
     def _poll(self):
-        changed = False
+        batch = []
         try:
-            for _ in range(200):
-                source, kind, payload = self.q.get_nowait()
-                changed = True
-                self._dispatch(source, kind, payload)
+            for _ in range(2000):
+                batch.append(self.q.get_nowait())
         except queue.Empty:
             pass
+        if batch:
+            # a fast script can post thousands of step and log updates a second; only
+            # the newest of each kind is worth drawing
+            last = {}
+            for i, (source, kind, _p) in enumerate(batch):
+                if (source, kind) in COALESCE:
+                    last[(source, kind)] = i
+            for i, (source, kind, payload) in enumerate(batch):
+                if (source, kind) in COALESCE and last[(source, kind)] != i:
+                    continue
+                try:
+                    self._dispatch(source, kind, payload)
+                except Exception:
+                    self._report_error(*sys.exc_info())
         sig = (self.job_running(), self.job.paused if self.job else None,
                self.triggers.running, self.recorder_tab.recorder.active)
-        if changed or sig != self._state_sig:
+        if batch or sig != self._state_sig:
             self._state_sig = sig
             self.refresh_states()
-        self.root.after(40, self._poll)
+        self.root.after(15 if len(batch) >= 2000 else 40, self._poll)
 
     def _dispatch(self, source, kind, payload):
         if source == "hotkey":
@@ -433,6 +752,9 @@ class App:
                 self._on_hotkey(payload)
             return
         if source == "app":
+            if kind == "cursor":
+                self._show_cursor(payload)
+                return
             if kind == "update":
                 self._on_update_result(payload)
                 return
@@ -445,10 +767,7 @@ class App:
             self.toast.show("Clicker", str(payload))
             return
         if kind == "highlight":
-            try:
-                ui.flash(self.root, payload, ms=700)
-            except Exception:
-                pass
+            self.flasher.show(payload, ms=700)
             return
         if source == "trigger":
             if kind == "log":
@@ -535,6 +854,13 @@ class App:
         label(d.body, f"{model.APP_NAME} {model.APP_VERSION}", font=F.title).pack(anchor="w")
         label(d.body, "Auto clicker, macro recorder, screen-aware scripts and triggers.",
               muted=True).pack(anchor="w", pady=(2, 14))
+        v_theme = tk.StringVar(value=theme.THEME_LABEL[theme.S["name"]])
+        v_motion = tk.BooleanVar(value=not anim.motion["on"])
+        row = frame(d.body)
+        row.pack(anchor="w", pady=(0, 4))
+        label(row, "Style", font=F.bold).pack(side="left", padx=(0, px(10)))
+        combo(row, v_theme, [t[1] for t in theme.THEMES], width=22).pack(side="left")
+        check(d.body, "Reduce motion (no sliding or fading)", v_motion).pack(anchor="w", pady=(0, 12))
         check(d.body, "Save a log for every script run (with a screenshot when it fails)", v_logs).pack(anchor="w")
         row = frame(d.body)
         row.pack(anchor="w", pady=(4, 12))
@@ -553,8 +879,12 @@ class App:
         def ok():
             self.settings["save_run_logs"] = bool(v_logs.get())
             self.settings["check_updates"] = bool(v_upd.get())
+            self.set_reduce_motion(bool(v_motion.get()))
             self.save_settings()
             d.destroy()
+            chosen = {v: k for k, v in theme.THEMES}.get(v_theme.get(), theme.S["name"])
+            if chosen != theme.S["name"]:
+                self.root.after(50, lambda: self.set_theme(chosen))
         d.ok = ok
         d.add_buttons("Save")
         d.run()
@@ -576,6 +906,8 @@ class App:
             self.recorder_tab.recorder.stop()
         self.triggers.stop()
         self.hotkeys.stop()
+        self.sampler.stop()
+        self._clear_autosave()
         self.save_rules()
         self.save_settings()
         self.root.destroy()

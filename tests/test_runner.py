@@ -230,3 +230,16 @@ def test_read_text_into_variable(fake_inputs, screen):
     r, _ = run(sc)
     assert r.result[0]
     assert ("type", "ok 4821") in fake_inputs.calls
+
+
+def test_step_updates_are_throttled_but_last_step_is_always_sent():
+    sc = script(S("Set Variable", var="i", value="0"),
+                S("While Variable", var="i", op="<", value="2000"),
+                S("Increment Variable", var="i", amount=1),
+                S("End While"),
+                S("Beep", label="last"))
+    r, ev = run(sc)
+    steps = [p for k, p in ev if k == "step"]
+    assert r.result[0]
+    assert len(steps) < 500          # thousands of steps ran, far fewer updates were sent
+    assert steps[-1] == 4            # the final step still reaches the window

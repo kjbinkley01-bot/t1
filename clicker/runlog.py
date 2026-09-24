@@ -7,8 +7,11 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 KEEP_RUNS = 40
+MAX_DETAIL_LINES = 20_000  # per step lines kept per run; failures and results are always written
+FLUSH_EVERY_S = 0.5
 
 
 def logs_dir():
@@ -55,15 +58,28 @@ class RunLog:
         os.makedirs(self.dir, exist_ok=True)
         self.path = os.path.join(self.dir, "log.txt")
         self._lock = threading.Lock()
-        self._f = open(self.path, "a", encoding="utf-8")
+        self._f = open(self.path, "a", encoding="utf-8", buffering=1 << 16)
         self.screenshots = []
+        self.detail_lines = 0
+        self._flushed = time.monotonic()
 
-    def write(self, msg):
+    def write(self, msg, detail=False):
+        """Add a line. detail lines (every step) stop after MAX_DETAIL_LINES so loops can't fill the disk."""
+        if detail:
+            self.detail_lines += 1
+            if self.detail_lines > MAX_DETAIL_LINES:
+                if self.detail_lines == MAX_DETAIL_LINES + 1:
+                    msg = f"(step by step lines stop here after {MAX_DETAIL_LINES:,}; problems are still logged)"
+                else:
+                    return
         line = f"{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}  {msg}\n"
         with self._lock:
             if self._f:
                 self._f.write(line)
-                self._f.flush()
+                now = time.monotonic()
+                if not detail or now - self._flushed > FLUSH_EVERY_S:
+                    self._f.flush()
+                    self._flushed = now
 
     def screenshot(self, tag="failure", mark=None):
         """Save the whole screen as PNG, outlining `mark` (x, y, w, h) in red if given."""

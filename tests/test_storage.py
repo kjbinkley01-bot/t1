@@ -67,3 +67,15 @@ def test_run_log_prunes_old_runs(tmp_path):
 def test_normalize_rejects_garbage():
     with pytest.raises(ValueError):
         model.normalize_script({"steps": [{"x": 1}]})
+
+
+def test_run_log_caps_step_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(runlog, "MAX_DETAIL_LINES", 5)
+    log = runlog.RunLog("cap", str(tmp_path))
+    for i in range(50):
+        log.write(f"step {i}", detail=True)
+    log.write("FAILED: boom")
+    log.close()
+    text = open(log.path, encoding="utf-8").read()
+    import re
+    assert len(re.findall(r"step \d", text)) == 5 and "stop here" in text and "FAILED: boom" in text

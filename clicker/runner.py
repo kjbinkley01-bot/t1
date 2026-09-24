@@ -30,6 +30,9 @@ class Job:
         self._user_pause = False
         self._holds = 0
         self._rewind = 0
+        self._last_yield = time.monotonic()
+        self._pending_step = None
+        self._step_sent_at = 0.0
         self.thread = None
         self.status = "Idle"
 
@@ -78,12 +81,33 @@ class Job:
         """Block while paused or held. Returns seconds spent blocked."""
         if not (self._user_pause or self._holds):
             return 0.0
+        self.flush_step()
         t0 = time.monotonic()
         while (self._user_pause or self._holds) and not self.stop_event.is_set():
             self.stop_event.wait(0.05)
         return time.monotonic() - t0
 
+    def show_step(self, i):
+        """Tell the window which step is running, at most ~30 times a second.
+
+        Fast loops run tens of thousands of steps a second; sending each one would
+        flood the window. Anything that is about to wait sends the latest step first.
+        """
+        self._pending_step = i
+        now = time.monotonic()
+        if now - self._step_sent_at >= 0.033:
+            self.flush_step(now)
+
+    def flush_step(self, now=None):
+        if self._pending_step is not None:
+            self.emit("step", self._pending_step)
+            self._pending_step = None
+            self._step_sent_at = now or time.monotonic()
+
     def sleep(self, seconds):
+        if seconds > 0.01:
+            self.flush_step()
+        self._last_yield = time.monotonic() + max(0.0, seconds)
         end = time.monotonic() + max(0.0, seconds)
         while True:
             self.check_stop()
@@ -211,6 +235,8 @@ class Runner(Job):
         self.scales = None
         self.last_region = None
         self.run_number = 0
+        self._last_yield = time.monotonic()
+        self.seen = {}  # where each image was last found, so the next search starts there
         st = self.script.get("settings") or {}
         self.restarts = max(0, int(st.get("restart_on_failure") or 0))
         self.restart_delay = max(0.0, float(st.get("restart_delay_s", 3) or 0))
@@ -221,10 +247,10 @@ class Runner(Job):
         self.emit("log", msg)
         self.note(msg)
 
-    def note(self, msg):
+    def note(self, msg, detail=False):
         """Write to the run log file only."""
         if self.run_log:
-            self.run_log.write(msg)
+            self.run_log.write(msg, detail)
 
     def substitute(self, text):
         base = builtin_values()
@@ -256,7 +282,9 @@ class Runner(Job):
         return cond
 
     def _wait(self, cond, timeout_s, poll_ms, assets):
-        checker = vision.Checker(self._cond(cond), assets.get)
+        if timeout_s:
+            self.flush_step()
+        checker = vision.Checker(self._cond(cond), assets.get, self.seen)
         ok, match, why = vision.wait_for(checker, timeout_s, poll_ms, self.stop_event, gate=self.gate)
         if why == "stopped":
             raise JobStopped("Stopped")
@@ -337,6 +365,7 @@ class Runner(Job):
             reason = f"Error: {e}"
             self._failed(reason)
         finally:
+            self.flush_step()
             self._release_held()
             vision.release_thread()
             self.note(f"Result: {reason}")
@@ -353,18 +382,20 @@ class Runner(Job):
         while i < n:
             self.check_stop()
             self.gate()
+            self._breathe()
             if depth == 0 and self._rewind:
                 i = max(0, i - self._rewind)
                 self._rewind = 0
             step = steps[i]
             if depth == 0:
                 self.current = i
-                self.emit("step", i)
+                self.show_step(i)
             if step.get("disabled"):
                 i += 1
                 continue
-            self.note(f"{'  ' * depth}Step {i + 1} {step['action']}"
-                      + (f" [{step['label']}]" if step.get("label") else ""))
+            if self.run_log:
+                self.note(f"{'  ' * depth}Step {i + 1} {step['action']}"
+                          + (f" [{step['label']}]" if step.get("label") else ""), detail=True)
             res = self._exec_step(step, i, fr)
             kind, arg = res
             if kind == "next":
@@ -384,6 +415,17 @@ class Runner(Job):
                 break
             else:
                 raise ScriptFailed(f"Step {i + 1}: unknown result {kind}")
+
+    def _breathe(self):
+        """Give other threads a moment during long runs of zero delay steps.
+
+        A tight loop would otherwise hold Python's interpreter lock and starve the
+        window and the hotkey listener (so even the emergency stop key would lag).
+        """
+        now = time.monotonic()
+        if now - self._last_yield > 0.015:
+            time.sleep(0.002)
+            self._last_yield = time.monotonic()
 
     def _policy(self, step, i, fr, what, attempts):
         """Decide what a failed step does. Returns a result tuple or ('retry', None)."""
@@ -609,7 +651,7 @@ class Runner(Job):
             if a == "Click Image":
                 cx, cy = m.center
                 tx, ty = cx + (x or 0), cy + (y or 0)
-                self.note(f"  found at {tx}, {ty} ({int(m.score * 100)}%)")
+                self.note(f"  found at {tx}, {ty} ({int(m.score * 100)}%)", detail=True)
                 if dry:
                     self.log(f"{tag}: found at {tx}, {ty} ({int(m.score * 100)}%), not clicked")
                     return ("next", None)
@@ -658,7 +700,7 @@ class Runner(Job):
             return ("next", None)
         if a == "Set Variable":
             self.values[step["var"]] = self.substitute(step.get("value"))
-            self.note(f"  {{{step['var']}}} = \"{model._short(self.values[step['var']], 60)}\"")
+            self.note(f"  {{{step['var']}}} = \"{model._short(self.values[step['var']], 60)}\"", detail=True)
             return ("next", None)
         if a == "Increment Variable":
             cur = to_number(self._var(step))
@@ -667,11 +709,11 @@ class Runner(Job):
                     raise ScriptFailed(f"Step {i + 1}: {{{step['var']}}} is \"{self._var(step)}\", not a number")
                 cur = 0.0
             self.values[step["var"]] = fmt_number(cur + float(step.get("amount") or 0))
-            self.note(f"  {{{step['var']}}} = {self.values[step['var']]}")
+            self.note(f"  {{{step['var']}}} = {self.values[step['var']]}", detail=True)
             return ("next", None)
         if a == "If Variable":
             truth = self._compare(step, i)
-            self.note(f"  {'true' if truth else 'false'} ({{{step['var']}}} is \"{self._var(step)}\")")
+            self.note(f"  {'true' if truth else 'false'} ({{{step['var']}}} is \"{self._var(step)}\")", detail=True)
             return self._goto(fr, step.get("goto") if truth else step.get("else_goto"), i)
 
         if a == "Delay":

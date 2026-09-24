@@ -19,6 +19,20 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.2
+* **Styles:** click **Style** in the top bar (or use Settings) to switch between **Classic**, **Liquid Glass
+  Dark** and **Liquid Glass Light**. Switching keeps your open script, undo history and recording. Glass
+  styles have rounded glass panels, glossy buttons with smooth hover, a tab indicator that slides, and
+  notices that glide in. **Reduce motion** in the same menu turns animations off.
+* **No more clipped text:** sizes follow Windows display scaling (125%, 150%...), table columns are never
+  narrower than their headings, and the window can't be shrunk below what its contents need.
+* **Smoother:** the cursor and pixel readout moved off the interface thread, fast scripts no longer flood
+  the window with updates (the worst stall went from about 2 seconds to 20 ms in testing), long scripts
+  redraw only the rows that change, and image searches start where the image was last seen.
+* **Safer:** if a button or timer hits an error, the app keeps running and writes the details to
+  `errors.log`; unsaved Action Script work is autosaved every minute and offered back after a crash;
+  run logs stop recording every step after 20,000 lines so endless loops can't fill the disk.
+
 ## What's new in 2.1
 * **Editor:** Undo / Redo, select several steps, copy / cut / paste steps (also between scripts, images
   included), drag rows to reorder, and step **labels** to jump to instead of numbers. Moving steps keeps
@@ -39,7 +53,8 @@ Ctrl+A select all, Delete delete, Alt+Up / Alt+Down move. Drag a row to move it.
 
 ## Where things are saved
 Settings, hotkeys and trigger rules live in `%APPDATA%\Clicker` (`~/.clicker` on macOS), run logs in its
-`logs` folder (the newest 40 runs are kept). Scripts save as `.clk`, recordings as `.clkrec`, exported
+`logs` folder (the newest 40 runs are kept). `errors.log` and `crash.log` there record any errors, and
+`autosave.clk` holds unsaved work until you save or close normally. Scripts save as `.clk`, recordings as `.clkrec`, exported
 triggers as `.clktrig`.
 
 ## Default hotkeys

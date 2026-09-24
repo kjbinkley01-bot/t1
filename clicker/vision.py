@@ -301,15 +301,54 @@ CHANGE_THRESHOLD = 0.003
 class Checker:
     """Evaluates one screen condition. Keeps state for change detection."""
 
-    def __init__(self, cond, get_image):
+    def __init__(self, cond, get_image, memory=None):
+        """memory: an optional dict shared between checkers that remembers where images were last seen."""
         self.c = dict(cond)
         self.get_image = get_image
+        self.memory = memory
         self.reset()
 
     def reset(self):
         self.base = None
         self.last = None
         self.still_since = None
+        self.last_match = None
+        if self.memory is not None and self.c.get("kind") in ("image_appears", "image_vanishes"):
+            self.last_match = self.memory.get(self._mem_key())
+
+    def _mem_key(self):
+        r = self.c.get("region")
+        return model.image_name(self.c.get("image")), tuple(r) if r else None
+
+    def _find(self, needle, region, conf, gray, scales):
+        """Search near the last match first; things on screen rarely move far between checks."""
+        m = self.last_match
+        if m is not None:
+            pad = max(24, m.w // 2, m.h // 2)
+            near = [m.x - pad, m.y - pad, m.w + 2 * pad, m.h + 2 * pad]
+            if region:
+                rx, ry, rw, rh = (int(v) for v in region)
+                x0, y0 = max(near[0], rx), max(near[1], ry)
+                x1, y1 = min(near[0] + near[2], rx + rw), min(near[1] + near[3], ry + rh)
+                near = [x0, y0, x1 - x0, y1 - y0]
+            sx, sy, sw, sh = virtual_screen()
+            x0, y0 = max(near[0], sx), max(near[1], sy)
+            x1, y1 = min(near[0] + near[2], sx + sw), min(near[1] + near[3], sy + sh)
+            if x1 - x0 >= m.w and y1 - y0 >= m.h:
+                hit = find_image(needle, [x0, y0, x1 - x0, y1 - y0], conf, gray, scales)
+                if hit is not None:
+                    self._remember(hit)
+                    return hit
+        hit = find_image(needle, region, conf, gray, scales)
+        self._remember(hit)
+        return hit
+
+    def _remember(self, hit):
+        self.last_match = hit
+        if self.memory is not None and hit is not None:
+            if len(self.memory) > 200:
+                self.memory.clear()
+            self.memory[self._mem_key()] = hit
 
     def _needle(self):
         name = model.image_name(self.c.get("image"))
@@ -323,7 +362,7 @@ class Checker:
         k = self.c.get("kind")
         region = self.c.get("region") or None
         if k in ("image_appears", "image_vanishes"):
-            m = find_image(self._needle(), region, float(self.c.get("confidence") or 0.9),
+            m = self._find(self._needle(), region, float(self.c.get("confidence") or 0.9),
                            bool(self.c.get("grayscale")), self.c.get("scales"))
             if k == "image_appears":
                 return m is not None, m

@@ -4,7 +4,7 @@ import copy
 import re
 
 APP_NAME = "Clicker"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 ACTION_GROUPS = [
     ("Mouse", [
@@ -550,7 +550,7 @@ def match_blocks(steps):
     return pairs, None
 
 
-def check_step(step, steps=None):
+def check_step(step, steps=None, labels=None):
     """Return an error message for an incomplete step, or None.
 
     Pass the whole step list to also check that jump targets exist.
@@ -586,7 +586,7 @@ def check_step(step, steps=None):
     if lab and (not LABEL_RE.match(lab) or lab.isdigit()):
         return "Labels use letters, digits, _ and - and must not be just a number."
     if steps is not None:
-        labels = label_map(steps)
+        labels = label_map(steps) if labels is None else labels
         w = step.get("wait") or {}
         for v in [step.get(k) for k in TARGET_KEYS] + [w.get("goto") if w.get("on_timeout") == "goto" else None]:
             try:

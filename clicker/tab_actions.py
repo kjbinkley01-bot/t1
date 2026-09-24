@@ -10,7 +10,7 @@ from . import editing, inputs, model, runlog, storage, ui, vision
 from .runner import Runner
 from .storage import AssetStore
 from .theme import (C, F, Button, cap, check, combo, entry, frame, label, panel,
-                    scrolled_tree, vsep)
+                    scrolled_tree, vsep, px)
 
 SPEEDS = ["0.25x", "0.5x", "0.75x", "1.0x", "1.5x", "2.0x", "3.0x"]
 LEFT_W = 13
@@ -147,7 +147,7 @@ class ActionTab(tk.Frame):
         self.lbl_form_msg.pack(side="left", padx=12)
 
         # right: wait / timing
-        q = panel(row, width=410)
+        q = panel(row, width=px(410))
         q.pack(side="right", fill="y", padx=(12, 0), before=p)
         q.pack_propagate(False)
         inner = frame(q, bg=C["panel"])
@@ -272,13 +272,18 @@ class ActionTab(tk.Frame):
         self.image_combos = [c for c in self.image_combos if c is self.cb_wait_target]
         spec = model.FIELD_SPECS.get(action, [])
         row = None
-        for idx, (key, text, width, kind) in enumerate(spec):
-            if idx % 3 == 0:
+        slots = 3
+        for key, text, width, kind in spec:
+            # image and region fields carry extra buttons, so they take two of a row's three slots
+            cost = 2 if kind in ("image", "region") else 1
+            if slots + cost > 3:
                 row = self._row(self.details)
                 self.detail_widgets.append(row)
                 self._lbl(row, text, LEFT_W).pack(side="left")
+                slots = cost
             else:
                 self._lbl(row, text).pack(side="left", padx=(14, 6))
+                slots += cost
             var = self.detail_vars.get(key)
             if var is None:
                 var = self.detail_vars[key] = tk.StringVar(value=model.DEFAULTS.get(key, ""))
@@ -609,10 +614,6 @@ class ActionTab(tk.Frame):
             self.tree.bind(f"<{m}-v>", lambda e: self.paste_steps() or "break")
             self.tree.bind(f"<{m}-d>", lambda e: self.duplicate() or "break")
             self.tree.bind(f"<{m}-a>", lambda e: self.tree.selection_set(self.tree.get_children()) or "break")
-            self.app.root.bind_all(f"<{m}-z>", self._key_undo, add="+")
-            self.app.root.bind_all(f"<{m}-y>", self._key_redo, add="+")
-            self.app.root.bind_all(f"<{m}-Shift-Z>", self._key_redo, add="+")
-            self.app.root.bind_all(f"<{m}-Z>", self._key_redo, add="+")
         self.tree.bind("<Alt-Up>", lambda e: self.move(-1) or "break")
         self.tree.bind("<Alt-Down>", lambda e: self.move(1) or "break")
 
@@ -660,22 +661,39 @@ class ActionTab(tk.Frame):
         if i is not None and (self._drag is None or not self._drag["moved"]):
             self.step_to_form(self.script["steps"][i])
 
+    def _row_data(self, i, s, labels):
+        xt, yt, cond = model.describe_step(s)
+        tags = ["odd" if i % 2 else "even"]
+        if model.is_screen_step(s):
+            tags.append("screen")
+        if i == self.running_row:
+            tags.append("running")
+        if model.check_step(s, self.script["steps"], labels):
+            tags.append("error")
+        back = ("Yes" if s.get("cursor_back") else "No") if s["action"] in model.MOUSE_ACTIONS else ""
+        values = (i + 1, s.get("label", ""), s["action"], xt, yt, back, s.get("delay_ms", 0), s.get("repeat", 1),
+                  cond, s.get("comment", ""))
+        return values, tuple(tags)
+
     def refresh_list(self, select=None):
-        self.tree.delete(*self.tree.get_children())
+        """Bring the table in line with the script, touching only the rows that changed."""
         steps = self.script["steps"]
-        for i, s in enumerate(steps):
-            xt, yt, cond = model.describe_step(s)
-            tags = ["odd" if i % 2 else "even"]
-            if model.is_screen_step(s):
-                tags.append("screen")
-            if i == self.running_row:
-                tags.append("running")
-            if model.check_step(s, steps):
-                tags.append("error")
-            back = ("Yes" if s.get("cursor_back") else "No") if s["action"] in model.MOUSE_ACTIONS else ""
-            self.tree.insert("", "end", iid=str(i), tags=tags, values=(
-                i + 1, s.get("label", ""), s["action"], xt, yt, back, s.get("delay_ms", 0), s.get("repeat", 1),
-                cond, s.get("comment", "")))
+        labels = model.label_map(steps)
+        shown = getattr(self, "_shown_rows", None)
+        if shown is None or len(self.tree.get_children()) != len(shown):
+            self.tree.delete(*self.tree.get_children())
+            shown = []
+        rows = [self._row_data(i, s, labels) for i, s in enumerate(steps)]
+        for i, row in enumerate(rows):
+            if i < len(shown):
+                if shown[i] != row:
+                    self.tree.item(str(i), values=row[0], tags=row[1])
+            else:
+                self.tree.insert("", "end", iid=str(i), values=row[0], tags=row[1])
+        for i in range(len(rows), len(shown)):
+            self.tree.delete(str(i))
+        self._shown_rows = rows
+        self.tree.selection_set(())
         if select is not None:
             want = [select] if isinstance(select, int) else list(select)
             want = [str(i) for i in want if 0 <= i < len(steps)]
@@ -699,6 +717,9 @@ class ActionTab(tk.Frame):
             if idx == i:
                 tags.append("running")
             self.tree.item(str(idx), tags=tags)
+            rows = getattr(self, "_shown_rows", None)
+            if rows and idx < len(rows):
+                rows[idx] = (rows[idx][0], tuple(tags))
         if i is not None and self.tree.exists(str(i)):
             self.tree.see(str(i))
 

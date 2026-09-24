@@ -8,7 +8,7 @@ from . import model, storage, ui
 from .runner import Runner
 from .storage import AssetStore
 from .theme import (C, F, Button, cap, check, combo, dot, entry, frame, label, panel,
-                    scrolled_tree)
+                    scrolled_tree, px)
 
 
 class ImportTab(tk.Frame):
@@ -76,7 +76,7 @@ class ImportTab(tk.Frame):
                                             ("waits", "Waits for", 300, True), ("timeout", "Timeout", 90, False)])
         box.pack(fill="both", expand=True, padx=1, pady=(0, 1))
 
-        side = frame(mid, width=340)
+        side = frame(mid, width=px(340))
         side.pack(side="left", fill="y", padx=(12, 0))
         side.pack_propagate(False)
         ip = panel(side)
@@ -116,8 +116,8 @@ class ImportTab(tk.Frame):
         Button(foot, "Clear", self.clear).pack(side="right", padx=(0, 6))
 
     def _chip(self, text, good=None):
-        bg = C["badge"] if good else ("#2d2412" if good is False else C["line"])
-        fg = C["teal"] if good else (C["warn"] if good is False else "#c9cdd2")
+        bg = C["badge"] if good else (C["warn_bg"] if good is False else C["line"])
+        fg = C["teal"] if good else (C["warn"] if good is False else C["chip"])
         label(self.chips, f"  {text}  ", bg=bg, fg=fg, font=F.small, pady=3).pack(side="left", padx=(0, 6))
 
     def _clear(self, w):
@@ -239,10 +239,10 @@ class ImportTab(tk.Frame):
                 ph = ui.thumbnail(img, 140, 54)
                 self.thumbs.append(ph)
                 tk.Label(cell, image=ph, bg=C["badge"], height=58, highlightthickness=1,
-                         highlightbackground="#2c5b54").pack(fill="x")
+                         highlightbackground=C["thumb_bd"]).pack(fill="x")
             else:
-                tk.Label(cell, text="missing", bg="#2a1414", fg=C["err"], height=3, font=F.small,
-                         highlightthickness=1, highlightbackground="#5b2c2c").pack(fill="x")
+                tk.Label(cell, text="missing", bg=C["err_bg"], fg=C["err"], height=3, font=F.small,
+                         highlightthickness=1, highlightbackground=C["err_bd"]).pack(fill="x")
             label(cell, model.image_stem(name), bg=C["panel"], muted=True, font=F.small).pack(anchor="w")
             shown += 1
         extra = len(refs) - shown

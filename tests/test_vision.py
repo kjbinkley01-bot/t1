@@ -88,3 +88,35 @@ def test_region_stable_and_changes(screen):
     assert s.check()[0] is False
     time.sleep(0.08)
     assert s.check()[0] is True
+
+
+def test_checker_searches_near_last_match_first(screen, monkeypatch):
+    tpl = make_template()
+    screen.paste(tpl, 500, 400)
+    memory = {}
+    cond = {"kind": "image_appears", "image": "t.png", "confidence": 0.9}
+    ok, m = vision.Checker(cond, {"t.png": tpl}.get, memory).check()
+    assert ok and (m.x, m.y) == (500, 400)
+    regions = []
+    real = vision.capture
+    monkeypatch.setattr(vision, "capture", lambda region=None: (regions.append(region), real(region))[1])
+    # a new checker for the same image (the next step) looks in a small box around the old spot
+    screen.clear()
+    screen.paste(tpl, 510, 405)
+    ok, m = vision.Checker(cond, {"t.png": tpl}.get, memory).check()
+    assert ok and (m.x, m.y) == (510, 405)
+    assert regions[0] is not None and regions[0][2] < 200 and len(regions) == 1
+
+
+def test_checker_falls_back_to_full_screen_when_image_moved_far(screen):
+    tpl = make_template()
+    memory = {}
+    cond = {"kind": "image_appears", "image": "t.png", "confidence": 0.9}
+    screen.paste(tpl, 50, 50)
+    assert vision.Checker(cond, {"t.png": tpl}.get, memory).check()[0]
+    screen.clear()
+    screen.paste(tpl, 700, 500)
+    ok, m = vision.Checker(cond, {"t.png": tpl}.get, memory).check()
+    assert ok and (m.x, m.y) == (700, 500)
+    screen.clear()
+    assert vision.Checker(cond, {"t.png": tpl}.get, memory).check()[0] is False

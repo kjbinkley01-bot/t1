@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import inputs, model, storage, triggers, ui, vision
 from .theme import (C, F, Button, cap, check, combo, entry, frame, label, listbox, panel,
-                    scrolled_tree, text_box)
+                    scrolled_tree, text_box, px)
 
 
 class TriggersTab(tk.Frame):
@@ -59,7 +59,7 @@ class TriggersTab(tk.Frame):
         body.pack(fill="both", expand=True, padx=14)
 
         # rules list
-        left = panel(body, width=320)
+        left = panel(body, width=px(320))
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
         head = frame(left, bg=C["panel"])
@@ -116,7 +116,7 @@ class TriggersTab(tk.Frame):
         tb = frame(top, bg=C["panel_alt"])
         tb.pack(side="left", padx=(12, 0))
         self.thumb_lbl = tk.Label(tb, text="No image yet", bg=C["badge"], fg=C["teal"], width=24, height=4,
-                                  font=F.small, highlightthickness=1, highlightbackground="#2c5b54")
+                                  font=F.small, highlightthickness=1, highlightbackground=C["thumb_bd"])
         self.thumb_lbl.pack()
         bb = frame(tb, bg=C["panel_alt"])
         bb.pack(fill="x", pady=(6, 0))
