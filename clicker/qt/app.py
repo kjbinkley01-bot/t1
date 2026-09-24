@@ -201,8 +201,7 @@ class GlassApp(QMainWindow):
             self.rules, self.trigger_assets = storage.load_triggers(storage.triggers_path())
         except Exception:
             self.rules, self.trigger_assets = [], storage.AssetStore()
-        self.triggers = TriggerEngine(lambda: list(self.rules), self.trigger_assets, self.emitter("trigger"),
-                                      Ctx(self))
+        self.triggers = TriggerEngine(self.get_rules, self.trigger_assets, self.emitter("trigger"), Ctx(self))
         self.hotkeys = HotkeyManager(lambda kind, payload: self.post("hotkey", kind, payload),
                                      self.settings["hotkeys"])
 
@@ -230,7 +229,9 @@ class GlassApp(QMainWindow):
 
     def _build(self):
         from .tab_actions import ActionTab
-        from .tab_placeholder import PlaceholderTab
+        from .tab_import import ImportTab
+        from .tab_recorder import RecorderTab
+        from .tab_triggers import TriggersTab
         surface = Surface()
         self.setCentralWidget(surface)
         outer = QVBoxLayout(surface)
@@ -267,9 +268,11 @@ class GlassApp(QMainWindow):
 
         self.stack = QStackedWidget()
         self.action_tab = ActionTab(self)
-        self.tabs = {"actions": self.action_tab}
-        for key, text in TABS[1:]:
-            self.tabs[key] = PlaceholderTab(self, text)
+        self.recorder_tab = RecorderTab(self)
+        self.triggers_tab = TriggersTab(self)
+        self.import_tab = ImportTab(self)
+        self.tabs = {"actions": self.action_tab, "recorder": self.recorder_tab,
+                     "triggers": self.triggers_tab, "import": self.import_tab}
         self.pages = {}
         for key, _ in TABS:
             # each tab scrolls when the window is shorter than its content (small or scaled screens)
@@ -411,6 +414,9 @@ class GlassApp(QMainWindow):
         apply_style(QApplication.instance(), self.mode)
         self._repaint_all()
         self.action_tab.restyle()
+        self.triggers_tab.refresh_rules()
+        if self.import_tab.script is not None:
+            self.import_tab.refresh()
 
     def set_wallpaper(self, key):
         self.wallpaper = key
@@ -493,6 +499,8 @@ class GlassApp(QMainWindow):
 
     def stop_all(self):
         self.stop_job()
+        if self.recording_active():
+            self.recorder_tab.stop_record(from_hotkey=True)
         if self.triggers.running:
             self.triggers.stop()
         self.toast.show_msg("Stopped", "Everything was stopped.", 2500, accent=glass.RED)
@@ -549,7 +557,7 @@ class GlassApp(QMainWindow):
             elif kind == "stop_all":
                 self.stop_all()
             elif kind == "run_script":
-                self.set_status("Trigger rules that run scripts work in the Classic look for now.")
+                self._run_script_from_trigger(payload)
             return
         if kind == "notify":
             self.toast.show_msg("Clicker", str(payload))
@@ -558,6 +566,9 @@ class GlassApp(QMainWindow):
             self.highlight.flash(payload)
             return
         if source == "trigger":
+            if kind == "log":
+                rule, msg, hit = payload
+                self.triggers_tab.add_log(rule, msg, hit)
             return
         owner = self.job_owner
         if kind == "state" and self.job:
@@ -586,6 +597,53 @@ class GlassApp(QMainWindow):
         if owner is not None and hasattr(owner, "on_job"):
             owner.on_job(kind, payload)
 
+    # ------------------------------------------------------------ trigger rules
+
+    def get_rules(self):
+        return list(self.rules)
+
+    def replace_rule(self, rule):
+        for i, r in enumerate(self.rules):
+            if r["id"] == rule["id"]:
+                self.rules[i] = rule
+                break
+        else:
+            self.rules.append(rule)
+        self.save_rules()
+
+    def save_rules(self):
+        try:
+            storage.save_triggers(storage.triggers_path(), self.rules, self.trigger_assets)
+        except Exception as e:
+            self.set_status(f"Could not save rules: {e}", error=True)
+
+    def toggle_monitoring(self):
+        if self.triggers.running:
+            self.triggers.stop()
+        else:
+            if not any(r.get("enabled") for r in self.rules):
+                self.set_status("Turn on at least one rule first.", error=True)
+                return
+            self.triggers.start()
+        QTimer.singleShot(100, self.refresh_states)
+
+    def _run_script_from_trigger(self, path):
+        if self.job_running():
+            self.triggers_tab.add_log("Run script", "Skipped: a job is already running", False)
+            return
+        try:
+            script, assets = storage.load_script(path)
+        except Exception as e:
+            self.triggers_tab.add_log("Run script", f"Could not open {path}: {e}", False)
+            return
+        from ..runner import Runner
+        st = script.get("settings") or {}
+        job = Runner(script, assets, self.emitter("script"), inputs_map=dict(self.last_inputs),
+                     speed=st.get("speed", 1.0), repeat=st.get("repeat", 1),
+                     random_delay_ms=st.get("random_delay_ms", 0), label=path,
+                     save_log=self.settings.get("save_run_logs", True))
+        self.start_job(job, self.import_tab)
+
     # ------------------------------------------------------------ hotkeys
 
     HOTKEY_NAMES = {
@@ -603,6 +661,10 @@ class GlassApp(QMainWindow):
             self.action_tab.add_at_cursor()
         elif action == "script_toggle":
             self.action_tab.toggle_run(from_hotkey=True)
+        elif action == "rec_toggle":
+            self.recorder_tab.toggle_record(from_hotkey=True)
+        elif action == "play_toggle":
+            self.recorder_tab.toggle_play()
 
     def begin_assign(self, action):
         self.capture_action = action
@@ -768,8 +830,11 @@ class GlassApp(QMainWindow):
         self.sampler.stop()
         self.toast.close()
         self.highlight.close()
+        if self.recording_active():
+            self.recorder_tab.recorder.stop()
         if not getattr(self, "_restart", False):
             self._clear_autosave()
+        self.save_rules()
         self.save_settings()
         e.accept()
 

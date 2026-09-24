@@ -26,8 +26,8 @@ left, with pill buttons, a tab lens that glides, iOS style switches and glass no
 
 * **Wallpapers:** the drop icon (top right) picks Aurora (the kit's gradient), Dusk, Deep Ocean, Mist or
   Blossom, or **your own picture**. Light wallpapers switch the glass to its light mode.
-* **Stage 1:** the Action Script tab is fully rebuilt. Macro Recorder, Screen Triggers and Import Script move
-  over next; until then they have a button that opens the Classic look, where they work as before.
+* **All four tabs** (Action Script, Macro Recorder, Screen Triggers, Import Script) are rebuilt in glass
+  with every feature of the Classic look.
 * **Classic is still there:** the drop icon > *Switch to Classic look*, or start with
   `python clicker_app.py --classic`. From Classic, *Style > Liquid Glass (new look)* switches back. Unsaved
   work comes along either way.
