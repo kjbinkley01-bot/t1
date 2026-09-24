@@ -13,7 +13,7 @@ if errorlevel 1 goto testfail
 echo.
 echo Building Clicker.exe ...
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name Clicker ^
-  --icon assets\clicker.ico --add-data "assets\clicker.png;assets" ^
+  --icon assets\clicker.ico --add-data "assets;assets" ^
   --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 ^
   --collect-submodules clicker ^
   clicker_app.py

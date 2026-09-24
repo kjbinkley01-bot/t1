@@ -48,7 +48,7 @@ PALETTES = {
         "err_bd": "#f0b3bb", "thumb_bd": "#9cc3ea", "rim_hi": "#ffffff", "on_rec": "#ffffff",
     },
 }
-THEMES = [("classic", "Classic"), ("glass_dark", "Liquid Glass Dark"), ("glass_light", "Liquid Glass Light")]
+THEMES = [("classic", "Classic"), ("glass_dark", "Rounded Dark"), ("glass_light", "Rounded Light")]
 THEME_LABEL = dict(THEMES)
 
 C = dict(PALETTES["classic"])

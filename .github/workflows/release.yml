@@ -32,19 +32,21 @@ jobs:
       - name: Install
         run: python -m pip install -r requirements-dev.txt
       - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m pytest
       - name: Build (Windows)
         if: runner.os == 'Windows'
         run: >
           python -m PyInstaller --noconfirm --clean --onefile --windowed --name Clicker
-          --icon assets\clicker.ico --add-data "assets\clicker.png;assets"
+          --icon assets\clicker.ico --add-data "assets;assets"
           --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32
           --collect-submodules clicker clicker_app.py
       - name: Build (macOS)
         if: runner.os == 'macOS'
         run: >
           python -m PyInstaller --noconfirm --clean --windowed --name Clicker
-          --icon assets/clicker.icns --add-data "assets/clicker.png:assets"
+          --icon assets/clicker.icns --add-data "assets:assets"
           --hidden-import pynput.keyboard._darwin --hidden-import pynput.mouse._darwin
           --collect-submodules clicker clicker_app.py
       - name: Zip

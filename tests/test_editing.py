@@ -113,3 +113,11 @@ def test_pasted_steps_validate():
     editing.paste(dst, a, text, 2)
     assert dst["steps"][2]["wait"]["goto"] == 3
     assert model.check_step(dst["steps"][2], dst["steps"]) is None
+
+
+def test_coalesce_keeps_newest_of_each_kind_in_order():
+    from clicker.core import coalesce
+    batch = [("script", "step", 1), ("script", "log", "a"), ("script", "step", 2), ("script", "done", 1),
+             ("script", "log", "b"), ("app", "cursor", 1), ("app", "cursor", 2)]
+    assert coalesce(batch) == [("script", "step", 2), ("script", "done", 1), ("script", "log", "b"),
+                               ("app", "cursor", 2)]

@@ -1,0 +1,24 @@
+{
+  "source": "Apple Liquid Glass iOS 26 Control Center UI Kit (Figma Community), file whAIIB5TVcmkZBEYKd1bP8, node 8001:107",
+  "note": "Values measured from Apple's iOS 26 kit, as documented in the Figma file's Read Me. Clicker's Qt interface builds its glass from these.",
+  "materials": {
+    "regular": {"use": "over wallpapers and busy content", "blur": 6, "depth": 80, "refraction": 0.6,
+                "dispersion": 0, "light": 0.7, "light_angle": 315},
+    "clear": {"use": "over photos and video", "blur": 5, "depth": 16, "refraction": 0.8, "dispersion": 0,
+              "light": 0.5, "light_angle": 315, "drop_shadow": {"radius": 40, "color": "#00000033"}}
+  },
+  "radius": {"tile": 30, "control": "pill", "circle": "pill", "symbol_well": "pill"},
+  "grid": {"unit": 68, "gutter": 15, "columns": 4},
+  "color": {
+    "content/label": "#ffffff",
+    "content/label-detail": "#ffffff54",
+    "content/symbol": "#ffffff",
+    "glass/symbol-well": "#ffffff0f",
+    "state/on-fill": "#ffffff",
+    "state/on-symbol": "#000000",
+    "slider/symbol": "#000000",
+    "accent/blue": "#0088ff",
+    "accent/green": "#34c759"
+  },
+  "rule": "Glass goes on an empty layer behind the content, never on the frame holding icons and labels."
+}

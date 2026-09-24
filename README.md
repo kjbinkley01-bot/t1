@@ -19,6 +19,22 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.3: the Liquid Glass look
+Clicker now opens in a new **Liquid Glass** interface built with Qt, following Apple's iOS 26 Liquid Glass kit
+(the values are in `assets/liquid_glass_tokens.json`): frosted glass panels over a wallpaper, lit from the top
+left, with pill buttons, a tab lens that glides, iOS style switches and glass notices.
+
+* **Wallpapers:** the drop icon (top right) picks Aurora (the kit's gradient), Dusk, Deep Ocean, Mist or
+  Blossom, or **your own picture**. Light wallpapers switch the glass to its light mode.
+* **Stage 1:** the Action Script tab is fully rebuilt. Macro Recorder, Screen Triggers and Import Script move
+  over next; until then they have a button that opens the Classic look, where they work as before.
+* **Classic is still there:** the drop icon > *Switch to Classic look*, or start with
+  `python clicker_app.py --classic`. From Classic, *Style > Liquid Glass (new look)* switches back. Unsaved
+  work comes along either way.
+* **Shortcut keys** now live in Settings (the gear icon).
+* Icons are Phosphor (MIT) and the font is Inter (OFL), both bundled; Apple's SF Symbols and SF Pro may
+  only be used on Apple platforms.
+
 ## What's new in 2.2
 * **Styles:** click **Style** in the top bar (or use Settings) to switch between **Classic**, **Liquid Glass
   Dark** and **Liquid Glass Light**. Switching keeps your open script, undo history and recording. Glass

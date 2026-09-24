@@ -12,7 +12,7 @@ import traceback
 import webbrowser
 from tkinter import messagebox
 
-from . import anim, inputs, model, runlog, storage, theme, ui, updates, vision
+from . import anim, model, runlog, storage, theme, ui, updates, vision
 from .hotkeys import HotkeyManager
 from .runner import Runner
 from .tab_actions import ActionTab
@@ -20,6 +20,7 @@ from .tab_import import ImportTab
 from .tab_recorder import RecorderTab
 from .tab_triggers import TriggersTab
 from .theme import C, F, Button, check, combo, entry, frame, label, px
+from .core import CursorSampler, Ctx, coalesce
 from .triggers import TriggerEngine
 
 AUTOSAVE_MS = 60_000
@@ -31,91 +32,6 @@ HOTKEY_NAMES = {
     "emergency": "Emergency stop", "rec_toggle": "Start / stop recording",
     "play_toggle": "Start / stop playback", "pause": "Pause / resume",
 }
-
-
-class Ctx:
-    """Thread-safe bridge the trigger engine uses to reach the running job."""
-
-    def __init__(self, app):
-        self.app = app
-
-    def _job(self):
-        j = self.app.job
-        return j if j is not None and j.running else None
-
-    def script_running(self):
-        return self._job() is not None
-
-    def hold(self):
-        j = self._job()
-        if j:
-            j.hold()
-            self.app._held_job = j
-
-    def release(self):
-        j = getattr(self.app, "_held_job", None)
-        if j:
-            j.release()
-            self.app._held_job = None
-
-    def pause(self):
-        j = self._job()
-        if j:
-            j.pause()
-
-    def resume(self):
-        j = self._job()
-        if j:
-            j.resume()
-
-    def rewind(self, n):
-        j = self._job()
-        if j:
-            j.rewind(n)
-
-    def stop_all(self):
-        self.app.post("app", "stop_all", None)
-
-    def run_script(self, path):
-        self.app.post("app", "run_script", path)
-
-
-class CursorSampler:
-    """Reads the cursor position and the pixel under it on a background thread.
-
-    Grabbing the screen can take tens of milliseconds on Windows; doing it on
-    the UI thread made the whole window stutter, especially while resizing.
-    """
-
-    def __init__(self, post, interval=0.12):
-        self.post = post
-        self.interval = interval
-        self.stop_event = threading.Event()
-        self.thread = threading.Thread(target=self._main, daemon=True, name="cursor-sampler")
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.stop_event.set()
-
-    def _main(self):
-        last = None
-        while not self.stop_event.wait(self.interval):
-            try:
-                x, y = inputs.position()
-                hexc = vision.rgb_hex(vision.pixel(x, y))
-            except Exception:
-                continue
-            if (x, y, hexc) != last:
-                last = (x, y, hexc)
-                self.post("app", "cursor", last)
-        vision.release_thread()
-
-
-# events where only the newest one matters; older ones are dropped when the queue backs up
-COALESCE = {("script", "step"), ("script", "log"), ("script", "state"), ("script", "run"),
-            ("script", "highlight"), ("app", "cursor"), ("trigger", "highlight")}
 
 
 class App:
@@ -207,6 +123,8 @@ class App:
         for key, text in theme.THEMES:
             m.add_radiobutton(label=text, value=key, variable=var, command=lambda k=key: self.set_theme(k))
         m.add_separator()
+        m.add_command(label="Liquid Glass (new look)...", command=self.switch_to_glass)
+        m.add_separator()
         motion = tk.BooleanVar(value=not anim.motion["on"])
         m.add_checkbutton(label="Reduce motion", variable=motion,
                           command=lambda: self.set_reduce_motion(motion.get()))
@@ -216,6 +134,35 @@ class App:
             m.tk_popup(w.winfo_rootx(), w.winfo_rooty() + w.winfo_height())
         finally:
             m.grab_release()
+
+    def switch_to_glass(self):
+        import importlib.util
+        if importlib.util.find_spec("PySide6") is None:
+            messagebox.showinfo("Liquid Glass", "The Liquid Glass look needs the PySide6 package.\n\n"
+                                "Run: python -m pip install PySide6\nor rebuild the app with build_windows.bat.",
+                                parent=self.root)
+            return
+        if self.job_running() or self.recorder_tab.recorder.active:
+            self.set_status("Stop the running script or recording first.", error=True)
+            return
+        if not messagebox.askyesno("Liquid Glass", "Restart Clicker in the Liquid Glass look? "
+                                   "Unsaved work will be offered back.", parent=self.root):
+            return
+        self.settings["ui"] = "glass"
+        self.save_settings()
+        if self.action_tab.dirty and self.action_tab.script["steps"]:
+            self.action_tab._sync_settings()
+            clk, meta = self._autosave_paths()
+            storage.save_script(clk, self.action_tab.script, self.action_tab.assets)
+            with open(meta, "w", encoding="utf-8") as f:
+                json.dump({"path": self.action_tab.path, "steps": len(self.action_tab.script["steps"])}, f)
+        self.restart_ui = "glass"
+        self.stop_job()
+        self.triggers.stop()
+        self.hotkeys.stop()
+        self.sampler.stop()
+        self.save_rules()
+        self.root.destroy()
 
     def set_reduce_motion(self, on):
         anim.motion["on"] = not on
@@ -722,13 +669,7 @@ class App:
         if batch:
             # a fast script can post thousands of step and log updates a second; only
             # the newest of each kind is worth drawing
-            last = {}
-            for i, (source, kind, _p) in enumerate(batch):
-                if (source, kind) in COALESCE:
-                    last[(source, kind)] = i
-            for i, (source, kind, payload) in enumerate(batch):
-                if (source, kind) in COALESCE and last[(source, kind)] != i:
-                    continue
+            for source, kind, payload in coalesce(batch):
                 try:
                     self._dispatch(source, kind, payload)
                 except Exception:
@@ -925,10 +866,13 @@ def main():
                 pass
     root = tk.Tk()
     try:
-        App(root)
+        app = App(root)
     except Exception as e:
         import traceback
         traceback.print_exc()
         messagebox.showerror("Clicker could not start", f"{e}")
         raise
     root.mainloop()
+    if getattr(app, "restart_ui", None) == "glass":
+        from .qt.app import main as glass_main
+        glass_main()
