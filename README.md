@@ -19,6 +19,16 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.5: step progress and smoother motion
+* **Step progress:** while a script runs, the current step shows how long until the next one. A glass fill
+  sweeps across the row with a bright leading edge, and the Delay column counts down (`1.6s`). Delays count
+  down exactly; screen waits show how much of their time limit is used (`≤8s`) and vanish as soon as the
+  screen matches. Pausing freezes the bar. Pauses shorter than 0.15 s aren't shown, so fast scripts stay calm.
+* **Tabs slide sideways:** switching tabs slides the page left or right, following the tab order, while the
+  wallpaper stays put.
+* **Smooth resizing:** the wallpaper is drawn once at screen size and fitted to the window, so the gradient
+  stretches smoothly when you drag the window bigger quickly, with no smeared line at the edge.
+
 ## What's new in 2.4: background mode (Windows)
 Run a script **inside one window** while you keep using your mouse and computer. In the Action Script tab,
 click **Run in: Whole screen** and pick the window (from the list, or by clicking it).

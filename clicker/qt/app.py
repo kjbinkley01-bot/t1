@@ -9,8 +9,8 @@ import threading
 import traceback
 import webbrowser
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPixmap, QRegion
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
@@ -36,14 +36,8 @@ class Surface(QWidget):
 
     def paintEvent(self, _e):
         win = self.window()
-        bd = win.backdrop
         p = QPainter(self)
-        if bd.sharp is not None:
-            if bd.sharp.size() == self.size():
-                p.drawPixmap(0, 0, bd.sharp)
-            else:  # mid resize: a quick stretch until the wallpaper is rebuilt at the new size
-                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, not getattr(win, "live_resize", False))
-                p.drawPixmap(self.rect(), bd.sharp)
+        win.backdrop.draw(p, QRectF(_e.rect()), QRectF(_e.rect()), smooth=not getattr(win, "live_resize", False))
         p.end()
 
 
@@ -80,25 +74,30 @@ def swatch_pixmap(hexc, dpr):
 
 
 class PageTransition(QWidget):
-    """Cross-fades from a snapshot of the old tab to the new one, which rises gently into place."""
+    """Slides between tabs the way the tab bar reads: the new page comes in from the side of its tab.
 
-    DURATION = 260
-    RISE = 14
+    Only the page contents move; the wallpaper stays put. Both pages are snapshots with a transparent
+    background, so each frame is the wallpaper plus two image copies.
+    """
 
-    def __init__(self, parent, rect, old_pm):
+    DURATION = 300
+    SHIFT = 56
+
+    def __init__(self, parent, rect, main, old_pm, direction):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        # The snapshots cover every pixel, so Qt must not repaint the live page underneath each frame.
+        # The wallpaper and snapshots cover every pixel, so Qt must not repaint the live page underneath.
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setGeometry(rect)
-        self.old_pm, self.new_pm, self.t = old_pm, None, 0.0
+        self.main = main
+        self.old_pm, self.new_pm, self.t, self.dir = old_pm, None, 0.0, direction
         self.show()
         self.raise_()
 
     def start(self, new_pm):
         self.new_pm = new_pm
-        glass.animate(self, 0.0, 1.0, self.DURATION, self._step, curve=QEasingCurve.Type.OutCubic,
+        glass.animate(self, 0.0, 1.0, self.DURATION, self._step, curve=QEasingCurve.Type.OutQuart,
                       done=self.finish, attr="_anim")
 
     def _step(self, v):
@@ -121,11 +120,25 @@ class PageTransition(QWidget):
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        p.drawPixmap(0, 0, self.old_pm)
+        r = QRectF(self.rect())
+        self.main.backdrop.draw(p, r, QRectF(self.geometry()), smooth=False)
+        t, d = self.t, self.dir * self.SHIFT
+        p.setOpacity(max(0.0, 1.0 - t * 1.6))           # the old page is gone a little before the move ends
+        p.drawPixmap(QPointF(-d * t, 0), self.old_pm)
         if self.new_pm is not None:
-            p.setOpacity(self.t)
-            p.drawPixmap(0, int(round(self.RISE * (1 - self.t))), self.new_pm)
+            p.setOpacity(min(1.0, t * 1.4))
+            p.drawPixmap(QPointF(d * (1 - t), 0), self.new_pm)
         p.end()
+
+
+def page_snapshot(area):
+    """The page's contents on a transparent background (no wallpaper), for sliding transitions."""
+    dpr = area.devicePixelRatioF()
+    pm = QPixmap(max(1, int(area.width() * dpr)), max(1, int(area.height() * dpr)))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.GlobalColor.transparent)
+    area.render(pm, QPoint(0, 0), QRegion(area.rect()), QWidget.RenderFlag.DrawChildren)
+    return pm
 
 
 class Toast(QWidget):
@@ -422,7 +435,7 @@ class GlassApp(QMainWindow):
         self.setMinimumWidth(min(need, scr.width() - 40))
 
     def resizeEvent(self, e):
-        if self.isVisible() and self.backdrop.sharp is not None:
+        if self.isVisible() and self.backdrop.base_sharp is not None:
             self.live_resize = True  # panels draw lighter glass until the size settles
         self.backdrop.resize(self.centralWidget().size() if self.centralWidget() else e.size())
         super().resizeEvent(e)
@@ -444,28 +457,27 @@ class GlassApp(QMainWindow):
             self.stack.setCurrentWidget(page)
             self.update_title()
             return
-        # Animate between two snapshots instead of the live pages: every frame is then two image
-        # copies, however many glass panels and controls the pages hold.
+        # Animate between two snapshots instead of the live pages: every frame is then the wallpaper and
+        # two image copies, however many glass panels and controls the pages hold.
+        keys = [k for k, _ in TABS]
+        direction = 1 if keys.index(key) > keys.index(old) else -1
         area = self.stack.geometry()
         surface = self.centralWidget()
-        old_pm = surface.grab(area)
+        old_pm = page_snapshot(self.pages[old])
         tr = getattr(self, "_transition", None)
         if tr is not None:
             try:
                 tr.finish()
             except RuntimeError:
                 pass  # already deleted
-        tr = PageTransition(surface, area, old_pm)
+        tr = PageTransition(surface, area, self, old_pm, direction)
         self._transition = tr
 
         def swap():
             if self._transition is not tr:
                 return
             self.stack.setCurrentWidget(page)
-            tr.hide()  # keep the snapshot of the new page free of the overlay itself
-            new_pm = surface.grab(area)
-            tr.show()
-            tr.start(new_pm)
+            tr.start(page_snapshot(page))
         QTimer.singleShot(0, swap)  # render the new page on the next frame, not in the same one
         self.update_title()
 

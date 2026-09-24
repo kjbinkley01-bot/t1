@@ -10,6 +10,9 @@ import time
 from . import inputs, model, runlog, storage, target, vision
 
 
+PROGRESS_MIN_S = 0.15  # shorter pauses would only flicker a progress bar
+
+
 class JobStopped(Exception):
     """The run ended on purpose: the user stopped it or a Stop Script step."""
 
@@ -104,9 +107,14 @@ class Job:
             self._pending_step = None
             self._step_sent_at = now or time.monotonic()
 
+    def announce(self, seconds, kind):
+        """Hook: a timed pause is starting (Runner shows it as a progress bar on the step)."""
+
     def sleep(self, seconds):
         if seconds > 0.01:
             self.flush_step()
+        if seconds >= PROGRESS_MIN_S:
+            self.announce(seconds, "delay")
         self._last_yield = time.monotonic() + max(0.0, seconds)
         end = time.monotonic() + max(0.0, seconds)
         while True:
@@ -287,11 +295,21 @@ class Runner(Job):
     def _wait(self, cond, timeout_s, poll_ms, assets):
         if timeout_s:
             self.flush_step()
+        timed = (timeout_s or 0) >= PROGRESS_MIN_S
+        if timed:
+            self.announce(float(timeout_s), "wait")
         checker = vision.Checker(self._cond(cond), assets.get, self.seen)
         ok, match, why = vision.wait_for(checker, timeout_s, poll_ms, self.stop_event, gate=self.gate)
+        if timed:
+            self.emit("progress", None)  # found early: the bar goes away instead of running to the timeout
         if why == "stopped":
             raise JobStopped("Stopped")
         return ok, match
+
+    def announce(self, seconds, kind):
+        if self.current is not None:
+            self.emit("progress", {"step": self.current, "start": time.monotonic(), "duration": float(seconds),
+                                   "kind": kind})
 
     def _highlight(self, rect):
         if self.target is not None:

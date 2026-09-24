@@ -3,11 +3,13 @@
 import copy
 import os
 
-from PySide6.QtCore import QEvent, QObject, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QShortcut
+import time
+
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QLinearGradient, QPainter, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QMessageBox, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+                               QHeaderView, QLabel, QLineEdit, QMessageBox, QStyledItemDelegate, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import editing, formlogic, inputs, model, runlog, storage, target, vision
 from ..runner import Runner
@@ -40,6 +42,71 @@ def field(width=None, mono=False, placeholder=""):
     if placeholder:
         e.setPlaceholderText(placeholder)
     return e
+
+
+DELAY_COL = 6
+
+
+class StepProgress(QStyledItemDelegate):
+    """Draws the running step's progress: a glass fill sweeping across its row, and the time left.
+
+    Delays count down exactly. Screen waits show how much of their time limit has been used (they
+    usually finish early, and the bar then simply disappears).
+    """
+
+    def __init__(self, tab):
+        super().__init__(tab.tree)
+        self.tab = tab
+
+    def _state(self, row):
+        pr = self.tab.progress
+        if not pr or pr["step"] != row:
+            return None
+        elapsed = self.tab.progress_elapsed()
+        frac = max(0.0, min(1.0, elapsed / pr["duration"])) if pr["duration"] > 0 else 1.0
+        return frac, max(0.0, pr["duration"] - elapsed), pr["kind"]
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        st = self._state(index.row()) if index.column() == DELAY_COL else None
+        if st:
+            _f, left, kind = st
+            option.text = f"{left:.1f}s" if kind == "delay" else f"≤{left:.0f}s"
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        st = self._state(index.row())
+        if not st:
+            return
+        frac, _left, kind = st
+        tree = self.tab.tree
+        hdr = tree.header()
+        x0 = hdr.sectionViewportPosition(0)
+        total = sum(hdr.sectionSize(c) for c in range(hdr.count()))
+        row = QRectF(x0, option.rect.y(), total, option.rect.height())
+        edge = row.x() + row.width() * frac
+        cell = QRectF(option.rect)
+        fill = QRectF(cell.x(), cell.y(), max(0.0, min(cell.right(), edge) - cell.x()), cell.height())
+        wait = kind == "wait"
+        base = QColor(127, 220, 255) if wait else QColor(0, 136, 255)
+        painter.save()
+        if fill.width() > 0:
+            g = QLinearGradient(row.x(), 0, edge, 0)
+            c0, c1 = QColor(base), QColor(base)
+            c0.setAlpha(18)
+            c1.setAlpha(70)
+            g.setColorAt(0, c0)
+            g.setColorAt(1, c1)
+            painter.fillRect(fill, g)
+            bar = QRectF(fill.x(), cell.bottom() - 2.5, fill.width(), 2.5)
+            painter.fillRect(bar, base)
+        if cell.left() <= edge <= cell.right() and frac < 1:  # a soft glowing leading edge
+            glow = QRectF(edge - 1.5, cell.y() + 3, 3, cell.height() - 6)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 255, 255, 170))
+            painter.drawRoundedRect(glow, 1.5, 1.5)
+        painter.restore()
 
 
 class _DragFilter(QObject):
@@ -97,6 +164,11 @@ class ActionTab(QWidget):
         self.dirty = False
         self.history = editing.History()
         self.running_row = None
+        self.progress = None
+        self._held_since, self._held_total = None, 0.0
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(16)  # ~60 fps, repainting only the running row
+        self._progress_timer.timeout.connect(self._progress_tick)
         self._rows = []
         self.detail_edits = {}
         self.detail_values = {}
@@ -351,6 +423,7 @@ class ActionTab(QWidget):
         h.addWidget(logs)
         sl.addLayout(h)
         self.tree = QTreeWidget()
+        self.tree.setItemDelegate(StepProgress(self))
         self.tree.setColumnCount(len(COLUMNS))
         self.tree.setHeaderLabels([c[0].upper() for c in COLUMNS])
         self.tree.setRootIsDecorated(False)
@@ -1125,10 +1198,60 @@ class ActionTab(QWidget):
             job.repeat = 1
             self.main.start_job(job, self)
 
+    # ------------------------------------------------------------ step progress
+
+    def progress_elapsed(self):
+        """Seconds into the current pause, not counting time spent paused or held by a trigger."""
+        pr = self.progress
+        now = time.monotonic()
+        job = self.main.job
+        held = bool(job and (job.paused or getattr(job, "_holds", 0)))
+        if held:
+            if self._held_since is None:
+                self._held_since = now
+            return self._held_since - pr["start"] - self._held_total
+        if self._held_since is not None:
+            self._held_total += now - self._held_since
+            self._held_since = None
+        return now - pr["start"] - self._held_total
+
+    def _set_progress(self, pr):
+        old = self.progress
+        self.progress = pr
+        self._held_since, self._held_total = None, 0.0
+        for p_ in (old, pr):
+            if p_:
+                self._repaint_row(p_["step"])
+        if pr:
+            self._progress_timer.start()
+        else:
+            self._progress_timer.stop()
+
+    def _repaint_row(self, row):
+        if 0 <= row < self.tree.topLevelItemCount():
+            r = self.tree.visualItemRect(self.tree.topLevelItem(row))
+            self.tree.viewport().update(QRect(0, r.y(), self.tree.viewport().width(), r.height()))
+
+    def _progress_tick(self):
+        pr = self.progress
+        if not pr:
+            self._progress_timer.stop()
+            return
+        self._repaint_row(pr["step"])
+        if self.progress_elapsed() > pr["duration"] + 0.25:
+            self._set_progress(None)
+
     def on_job(self, kind, payload):
         if kind == "step":
+            if self.progress and self.progress["step"] != payload:
+                self._set_progress(None)
             self.mark_running(payload)
+        elif kind == "progress":
+            if payload is not None and payload["step"] != self.running_row:
+                self.mark_running(payload["step"])
+            self._set_progress(payload)
         elif kind == "done":
+            self._set_progress(None)
             self.mark_running(None)
 
     def update_state(self, running_mine, running_any, paused):

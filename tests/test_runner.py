@@ -243,3 +243,25 @@ def test_step_updates_are_throttled_but_last_step_is_always_sent():
     assert r.result[0]
     assert len(steps) < 500          # thousands of steps ran, far fewer updates were sent
     assert steps[-1] == 4            # the final step still reaches the window
+
+
+def test_timed_pauses_announce_progress_for_their_step(screen):
+    sc = script(S("Beep"), S("Delay", ms=200), S("Wait for Screen to Settle", stable_ms=10, timeout_s=2),
+                S("Delay", ms=50))
+    r, ev = run(sc, speed=1)
+    assert r.result[0]
+    prog = [p for k, p in ev if k == "progress"]
+    delays = [p for p in prog if p and p["kind"] == "delay"]
+    waits = [p for p in prog if p and p["kind"] == "wait"]
+    assert delays and delays[0]["step"] == 1 and abs(delays[0]["duration"] - 0.2) < 1e-6
+    assert waits and waits[0]["step"] == 2 and waits[0]["duration"] == 2.0
+    assert None in prog                             # the screen settled early, so its bar was cleared
+    assert not any(p and p["step"] == 3 for p in prog)  # 50 ms is too short to show
+
+
+def test_progress_step_comes_after_its_step_update():
+    sc = script(S("Beep"), S("Beep"), S("Delay", ms=300))
+    r, ev = run(sc, speed=1)
+    order = [(k, p) for k, p in ev if k in ("step", "progress") and p is not None]
+    i_prog = next(i for i, (k, p) in enumerate(order) if k == "progress")
+    assert ("step", 2) in order[:i_prog]

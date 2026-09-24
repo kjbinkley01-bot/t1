@@ -86,3 +86,30 @@ def test_fast_glass_skips_the_depth_band(qapp):
         if not fast:
             full = inner
     assert full > inner
+
+
+def test_running_step_shows_its_countdown(qapp):
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QStyleOptionViewItem, QTreeWidget, QTreeWidgetItem
+
+    from clicker.qt import tab_actions
+
+    tree = QTreeWidget()
+    tree.setColumnCount(8)
+    for _ in range(2):
+        tree.addTopLevelItem(QTreeWidgetItem([""] * 6 + ["100", "1"]))
+    tab = SimpleNamespace(tree=tree, progress={"step": 1, "start": 0.0, "duration": 3.0, "kind": "delay"},
+                          progress_elapsed=lambda: 1.2)
+    d = tab_actions.StepProgress(tab)
+
+    def text(row):
+        opt = QStyleOptionViewItem()
+        d.initStyleOption(opt, tree.model().index(row, tab_actions.DELAY_COL))
+        return opt.text
+
+    assert text(1) == "1.8s" and text(0) == "100"
+    tab.progress = dict(tab.progress, kind="wait", duration=10.0)
+    assert text(1) == "≤9s"
+    tab.progress = None
+    assert text(1) == "100"

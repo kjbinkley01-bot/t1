@@ -214,7 +214,14 @@ def np_to_pixmap(arr):
 
 
 class Backdrop(QObject):
-    """The window's wallpaper and its frosted (blurred) copy, rebuilt when the size settles."""
+    """The window's wallpaper and its frosted (blurred) copy.
+
+    Both are rendered once, at the size of the screen, and every painter samples them through the
+    same "cover" mapping (scale to fill the window, centered). Resizing the window therefore never has
+    to wait for a new render: the wallpaper and the glass stretch together, smoothly, with no edge where
+    one image runs out. Once a resize settles, exact size copies are made so ordinary paints are plain
+    copies again.
+    """
 
     changed = Signal()
 
@@ -222,43 +229,103 @@ class Backdrop(QObject):
         super().__init__()
         self.scene = scene
         self.image_path = image_path
-        self.size = QSize(0, 0)
-        self.sharp = None
-        self.frost = None
-        self.generation = 0  # bumps on every rebuild, so cached glass knows to redraw
+        self.size = QSize(0, 0)         # the window content size being covered
+        self.base_sharp = None          # screen sized renders
+        self.base_frost = None
+        self.fit_sharp = None           # exact window size copies, made when a resize settles
+        self.fit_frost = None
+        self.generation = 0             # bumps whenever what the glass shows could change
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self._rebuild)
-        self._pending = None
+        self._timer.timeout.connect(self._refit)
+
+    # compatibility: the frosted and sharp images that exactly cover the window, when ready
+    @property
+    def sharp(self):
+        return self.fit_sharp or self.base_sharp
+
+    @property
+    def frost(self):
+        return self.fit_frost or self.base_frost
+
+    def _base_size(self):
+        from PySide6.QtGui import QGuiApplication
+        scr = QGuiApplication.primaryScreen()
+        full = scr.virtualSize() if scr else QSize(1920, 1080)
+        w = max(full.width(), self.size.width(), 800)
+        h = max(full.height(), self.size.height(), 600)
+        return min(w, 5120), min(h, 2880)
 
     def set_scene(self, scene, image_path=None):
         self.scene, self.image_path = scene, image_path
-        if self.size.width() > 0:
-            self._pending = self.size
-            self._rebuild()
+        self._render()
+        self._refit()
 
     def resize(self, size):
-        if size == self.size and self.sharp is not None:
+        size = QSize(size)
+        if size == self.size and self.base_sharp is not None:
             return
-        self._pending = QSize(size)
-        if self.sharp is None:
-            self._rebuild()
+        self.size = size
+        need = self.base_sharp is None or size.width() > self.base_sharp.width() or \
+            size.height() > self.base_sharp.height()
+        if need:
+            self._render()
+        if self.fit_sharp is None:
+            self._refit()
         else:
-            self._timer.start(90)  # while dragging, the old images are stretched; rebuild when it settles
+            self.fit_sharp = self.fit_frost = None   # sample the base images until the size settles
+            self.generation += 1
+            self._timer.start(120)
 
-    def _rebuild(self):
-        size = self._pending or self.size
-        w, h = max(16, size.width()), max(16, size.height())
-        arr = load_image_cover(self.image_path, w, h) if self.image_path else None
+    def _render(self):
+        bw, bh = self._base_size()
+        arr = load_image_cover(self.image_path, bw, bh) if self.image_path else None
         if arr is None:
-            arr = render_scene(self.scene, w, h)
-        small = cv2.resize(arr, (max(4, w // 4), max(4, h // 4)), interpolation=cv2.INTER_AREA)
+            arr = render_scene(self.scene, bw, bh)
+        small = cv2.resize(arr, (max(4, bw // 4), max(4, bh // 4)), interpolation=cv2.INTER_AREA)
         small = cv2.GaussianBlur(small, (0, 0), 9)  # ~36 px at full size: the frosted look
-        frost = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
-        self.sharp, self.frost = np_to_pixmap(arr), np_to_pixmap(frost)
-        self.size = QSize(w, h)
+        frost = cv2.resize(small, (bw, bh), interpolation=cv2.INTER_LINEAR)
+        self.base_sharp, self.base_frost = np_to_pixmap(arr), np_to_pixmap(frost)
+        self.fit_sharp = self.fit_frost = None
+        self.generation += 1
+
+    def mapping(self):
+        """(scale, x offset, y offset): window point (x, y) shows base pixel ((x / s) + ox, (y / s) + oy)."""
+        bw, bh = self.base_sharp.width(), self.base_sharp.height()
+        W, H = max(1, self.size.width()), max(1, self.size.height())
+        s = max(W / bw, H / bh)
+        return s, (bw - W / s) / 2, (bh - H / s) / 2
+
+    def source(self, rect):
+        """The part of the base images that shows under a rectangle given in window coordinates."""
+        s, ox, oy = self.mapping()
+        return QRectF(rect.x() / s + ox, rect.y() / s + oy, rect.width() / s, rect.height() / s)
+
+    def _fit(self, pm):
+        full = self.source(QRectF(0, 0, self.size.width(), self.size.height())).toRect()
+        return pm.copy(full).scaled(self.size, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                    Qt.TransformationMode.SmoothTransformation)
+
+    def _refit(self):
+        if self.base_sharp is None or self.size.width() <= 0:
+            return
+        self.fit_sharp, self.fit_frost = self._fit(self.base_sharp), self._fit(self.base_frost)
         self.generation += 1
         self.changed.emit()
+
+    def draw(self, p, target, window_rect, frosted=False, smooth=True):
+        """Paint the wallpaper (or its frosted copy) that lies under window_rect into target."""
+        fit = self.fit_frost if frosted else self.fit_sharp
+        if fit is not None and fit.size() == self.size:
+            p.drawPixmap(target, fit, QRectF(window_rect))
+            return
+        base = self.base_frost if frosted else self.base_sharp
+        if base is None:
+            return
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, smooth)
+        p.drawPixmap(target, base, self.source(QRectF(window_rect)))
+        p.restore()
 
 
 # ---------------------------------------------------------------- painting
@@ -313,9 +380,9 @@ def paint_glass(p, rect, radius, backdrop, origin, mode, light=0.7, shadow=True,
         p.drawPixmap(QPointF(rect.x() - pad, rect.y() - pad + 6), pm)
     p.save()
     p.setClipPath(path)
-    if backdrop is not None and backdrop.frost is not None:
+    if backdrop is not None and backdrop.base_frost is not None:
         src = QRectF(origin.x() + rect.x(), origin.y() + rect.y(), rect.width(), rect.height())
-        p.drawPixmap(rect, backdrop.frost, src)
+        backdrop.draw(p, rect, src, frosted=True)
     p.fillPath(path, tint or mode.tint)
     if lift:
         p.fillPath(path, QColor(255, 255, 255, int(28 * lift)))
@@ -439,11 +506,11 @@ class GlassPanel(QWidget):
         overlay = self._cache.get(key, w, h, self.devicePixelRatioF(), draw)
         p = QPainter(self)
         bd = getattr(win, "backdrop", None)
-        if bd is not None and bd.frost is not None:
+        if bd is not None and bd.base_frost is not None:
             o = window_origin(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setClipPath(rounded(rect, radius))
-            p.drawPixmap(rect, bd.frost, QRectF(o.x() + 1, o.y() + 1, w - 2, h - 2))
+            bd.draw(p, rect, QRectF(o.x() + 1, o.y() + 1, w - 2, h - 2), frosted=True, smooth=not fast)
             p.setClipping(False)
         p.drawPixmap(0, 0, overlay)
         p.end()
