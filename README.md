@@ -9,7 +9,7 @@ Auto clicker, macro recorder, screen-aware script runner and screen triggers for
    The first build takes a few minutes.
 4. Your app is `dist\Clicker.exe`.
 
-To try it without building, double-click `run_from_source.bat`.
+To try it without building, double-click `run_from_source.bat`. The console window can be closed; Clicker keeps running. If Clicker doesn't start, run `run_from_source.bat console` from a Command Prompt to see the error.
 
 **Read Text** steps read words and numbers off the screen with Tesseract OCR. Install it once from
 https://github.com/UB-Mannheim/tesseract/wiki (keep the default install folder). Settings shows whether
