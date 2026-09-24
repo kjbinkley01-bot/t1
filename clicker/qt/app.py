@@ -276,7 +276,8 @@ class GlassApp(QMainWindow):
             area = QScrollArea()
             area.setWidgetResizable(True)
             area.setFrameShape(QFrame.Shape.NoFrame)
-            area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            # never crop: the window keeps its minimum width, and only a screen too small for that scrolls
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
             area.viewport().setAutoFillBackground(False)
             area.setWidget(self.tabs[key])
@@ -325,8 +326,19 @@ class GlassApp(QMainWindow):
         scr = QApplication.primaryScreen().availableGeometry()
         w = min(max(1360, want.width() + 60), scr.width() - 40)
         h = min(max(900, want.height() + 150), scr.height() - 40)
-        self.setMinimumSize(min(1000, scr.width() - 40), min(560, scr.height() - 40))
-        self.resize(w, h)
+        self.update_min_width()
+        self.setMinimumHeight(min(560, scr.height() - 40))
+        self.resize(max(w, self.minimumWidth()), h)
+
+    def update_min_width(self):
+        """The window may not get narrower than its widest tab needs, so nothing is cut off on the right."""
+        if not hasattr(self, "tabs"):
+            return
+        need = max(t.minimumSizeHint().width() for t in self.tabs.values())
+        m = self.centralWidget().layout().contentsMargins()
+        need += m.left() + m.right() + 12  # room for a vertical scroll bar
+        scr = QApplication.primaryScreen().availableGeometry()
+        self.setMinimumWidth(min(need, scr.width() - 40))
 
     def resizeEvent(self, e):
         self.backdrop.resize(self.centralWidget().size() if self.centralWidget() else e.size())

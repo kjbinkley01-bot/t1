@@ -236,7 +236,8 @@ class ActionTab(QWidget):
         top.addWidget(ed, 1)
 
         wp = GlassPanel(radius=30)
-        wp.setFixedWidth(452)
+        wp.setMinimumWidth(410)
+        wp.setMaximumWidth(452)
         wl = QVBoxLayout(wp)
         wl.setContentsMargins(22, 20, 22, 18)
         wl.setSpacing(8)
@@ -468,6 +469,8 @@ class ActionTab(QWidget):
             col += cost
         self.lbl_hint.setText(model.ACTION_HINTS.get(action, ""))
         self.lbl_hint.setVisible(bool(self.lbl_hint.text()))
+        if hasattr(self.main, "update_min_width"):
+            self.main.update_min_width()  # some actions have wider forms
 
     def _on_wait_mode(self, *_):
         mode = model.WAIT_ID.get(self.cb_wait.currentText(), "none")
