@@ -1,19 +1,21 @@
 """Main window: tab bar, status bar, hotkeys, jobs, and trigger monitoring."""
 
+import os
 import queue
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import messagebox
 
-from . import inputs, model, storage, ui, vision
+from . import inputs, model, runlog, storage, ui, updates, vision
 from .hotkeys import HotkeyManager
 from .runner import Runner
 from .tab_actions import ActionTab
 from .tab_import import ImportTab
 from .tab_recorder import RecorderTab
 from .tab_triggers import TriggersTab
-from .theme import C, F, Button, entry, frame, label
+from .theme import C, F, Button, check, entry, frame, label
 from .triggers import TriggerEngine
 
 TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"),
@@ -92,6 +94,9 @@ class App:
         self.capture_action = None
         self.toast = ui.Toast(root)
         self.current_tab = None
+        self.last_log_dir = None
+        self.update_info = None
+        self._set_icon()
 
         try:
             self.rules, self.trigger_assets = storage.load_triggers(storage.triggers_path())
@@ -119,6 +124,7 @@ class App:
         root.after(50, lambda: ui.dark_titlebar(root))
         root.after(40, self._poll)
         root.after(200, self._status_tick)
+        root.after(2500, self.check_updates)
         self.refresh_states()
 
     # ------------------------------------------------------------ chrome
@@ -148,6 +154,15 @@ class App:
                 fg=C["text"] if self.current_tab == k else C["muted"]))
             self.tab_labels[key] = lbl
             self.tab_lines[key] = line
+        gear = tk.Label(top, text="Settings", bg=C["bar"], fg=C["muted"], font=F.body, padx=12, pady=10,
+                        cursor="hand2")
+        gear.pack(side="right", padx=(0, 8))
+        gear.bind("<Button-1>", lambda e: self.show_settings())
+        gear.bind("<Enter>", lambda e: gear.configure(fg=C["text"]))
+        gear.bind("<Leave>", lambda e: gear.configure(fg=C["muted"]))
+        self.lbl_update = tk.Label(top, text="", bg=C["bar"], fg=C["accent"], font=F.bold, cursor="hand2")
+        self.lbl_update.pack(side="right", padx=8)
+        self.lbl_update.bind("<Button-1>", lambda e: self.open_update())
         self.lbl_file = label(top, "", bg=C["bar"], muted=True)
         self.lbl_file.pack(side="right", padx=16)
         tk.Frame(self.root, bg=C["line"], height=1).pack(fill="x")
@@ -340,7 +355,8 @@ class App:
         st = script.get("settings") or {}
         job = Runner(script, assets, self.emitter("script"), inputs_map=dict(self.last_inputs),
                      speed=st.get("speed", 1.0), repeat=st.get("repeat", 1),
-                     random_delay_ms=st.get("random_delay_ms", 0), label=path)
+                     random_delay_ms=st.get("random_delay_ms", 0), label=path,
+                     save_log=self.settings.get("save_run_logs", True))
         self.start_job(job, self.import_tab)
 
     # ------------------------------------------------------------ rules
@@ -417,6 +433,9 @@ class App:
                 self._on_hotkey(payload)
             return
         if source == "app":
+            if kind == "update":
+                self._on_update_result(payload)
+                return
             if kind == "stop_all":
                 self.stop_all()
             elif kind == "run_script":
@@ -447,6 +466,8 @@ class App:
             self.job.status = f"Running step {payload + 1}"
         elif kind == "log":
             self.set_status(str(payload))
+        elif kind == "logfile":
+            self.last_log_dir = payload
         elif kind == "done":
             ok, reason = payload
             if self._hid_window:
@@ -456,11 +477,87 @@ class App:
                 self.set_status("Finished")
             else:
                 self.set_status(reason, error=not reason.startswith("Stop"))
-                if reason.startswith("Error") or "timed out" in reason or "not found" in reason \
-                        or "missing" in reason or "does not exist" in reason:
-                    self.toast.show("Script stopped", reason, ms=8000, accent=C["rec"])
+                if not reason.startswith("Stop"):
+                    more = " The run log and a screenshot are in Run Logs." if self.last_log_dir else ""
+                    self.toast.show("Script stopped", reason + more, ms=9000, accent=C["rec"])
         if owner is not None and hasattr(owner, "on_job"):
             owner.on_job(kind, payload)
+
+    # ------------------------------------------------------------ icon, settings, updates
+
+    def _set_icon(self):
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        path = os.path.join(base, "assets", "clicker.png")
+        try:
+            self._icon = tk.PhotoImage(file=path)
+            self.root.iconphoto(True, self._icon)
+        except Exception:
+            pass
+
+    def check_updates(self, force=False):
+        started = updates.check_async(self.settings, lambda r: self.post("app", "update", dict(r, force=force)),
+                                      force=force)
+        if force and started:
+            self.set_status("Checking for updates...")
+
+    def _on_update_result(self, r):
+        self.save_settings()
+        if r.get("error"):
+            if r.get("force"):
+                self.set_status(f"Could not check for updates: {r['error']}", error=True)
+            return
+        if r.get("newer"):
+            self.update_info = r
+            self.lbl_update.configure(text=f"Update {r['tag']} available")
+            if r.get("force"):
+                self.open_update()
+        elif r.get("force"):
+            self.set_status(f"Clicker {model.APP_VERSION} is up to date.")
+
+    def open_update(self):
+        r = self.update_info
+        if not r:
+            return
+        notes = (r.get("notes") or "").strip()
+        if len(notes) > 900:
+            notes = notes[:900].rstrip() + " ..."
+        msg = f"Clicker {r['tag']} is available (you have {model.APP_VERSION})."
+        if notes:
+            msg += "\n\n" + notes
+        msg += "\n\nOpen the download page?"
+        if messagebox.askyesno("Update available", msg, parent=self.root):
+            webbrowser.open(r["url"])
+
+    def show_settings(self):
+        d = ui.Dialog(self.root, "Settings")
+        v_logs = tk.BooleanVar(value=self.settings.get("save_run_logs", True))
+        v_upd = tk.BooleanVar(value=self.settings.get("check_updates", True))
+        label(d.body, f"{model.APP_NAME} {model.APP_VERSION}", font=F.title).pack(anchor="w")
+        label(d.body, "Auto clicker, macro recorder, screen-aware scripts and triggers.",
+              muted=True).pack(anchor="w", pady=(2, 14))
+        check(d.body, "Save a log for every script run (with a screenshot when it fails)", v_logs).pack(anchor="w")
+        row = frame(d.body)
+        row.pack(anchor="w", pady=(4, 12))
+        Button(row, "Open Run Logs", lambda: runlog.open_folder(runlog.logs_dir()), small=True).pack(side="left")
+        label(row, runlog.logs_dir(), muted=True, font=F.small).pack(side="left", padx=10)
+        check(d.body, "Check for updates once a day", v_upd).pack(anchor="w")
+        row = frame(d.body)
+        row.pack(anchor="w", pady=(4, 0))
+        Button(row, "Check now", lambda: self.check_updates(force=True), small=True).pack(side="left")
+        label(row, f"Releases from github.com/{self.settings.get('update_repo') or updates.DEFAULT_REPO}",
+              muted=True, font=F.small).pack(side="left", padx=10)
+        problem = vision.ocr_problem()
+        label(d.body, "Read Text (OCR): " + ("ready" if not problem else problem), muted=True, font=F.small,
+              wraplength=460, justify="left").pack(anchor="w", pady=(14, 0))
+
+        def ok():
+            self.settings["save_run_logs"] = bool(v_logs.get())
+            self.settings["check_updates"] = bool(v_upd.get())
+            self.save_settings()
+            d.destroy()
+        d.ok = ok
+        d.add_buttons("Save")
+        d.run()
 
     def on_close(self):
         if self.action_tab.dirty and self.action_tab.script["steps"]:

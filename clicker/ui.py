@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from . import inputs, triggers, vision
-from .theme import C, F, Button, check, combo, dark_titlebar, entry, frame, label, text_box
+from .theme import C, F, Button, combo, dark_titlebar, entry, frame, label, text_box
 
 
 # ---------------------------------------------------------------- region picker

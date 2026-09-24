@@ -324,7 +324,8 @@ class ImportTab(tk.Frame):
         job = Runner(self.script, self.assets, self.app.emitter("script"), inputs_map=values,
                      speed=st.get("speed", 1.0), repeat=1 if dry else st.get("repeat", 1),
                      random_delay_ms=st.get("random_delay_ms", 0), dry_run=dry, start_delay=2.0,
-                     label="Dry run" if dry else "Imported script")
+                     label="Dry run" if dry else "Imported script",
+                     save_log=self.app.settings.get("save_run_logs", True))
         self.app.start_job(job, self, hide=not dry and self.app.action_tab.v_hide.get())
 
     def run_dry(self):

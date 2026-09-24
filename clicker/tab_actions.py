@@ -2,10 +2,11 @@
 
 import copy
 import os
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from . import inputs, model, storage, ui, vision
+from . import editing, inputs, model, runlog, storage, ui, vision
 from .runner import Runner
 from .storage import AssetStore
 from .theme import (C, F, Button, cap, check, combo, entry, frame, label, panel,
@@ -23,6 +24,8 @@ class ActionTab(tk.Frame):
         self.assets = AssetStore()
         self.path = None
         self.dirty = False
+        self.history = editing.History()
+        self._drag = None
         self.running_row = None
         self.detail_vars = {}
         self.detail_widgets = []
@@ -31,13 +34,15 @@ class ActionTab(tk.Frame):
         sv = lambda v="": tk.StringVar(value=v)  # noqa: E731
         self.v_x, self.v_y = sv(), sv()
         self.v_action = sv("Left Click")
-        self.v_delay, self.v_repeat, self.v_comment = sv("100"), sv("1"), sv()
+        self.v_delay, self.v_repeat, self.v_comment, self.v_label = sv("100"), sv("1"), sv(), sv()
         self.v_back = tk.BooleanVar(value=False)
         self.v_wait_mode = sv(model.WAIT_LABEL["none"])
         self.v_wait_target = sv()
         self.v_wait_timeout, self.v_wait_poll, self.v_wait_conf = sv("30"), sv("250"), sv("90")
         self.v_on_timeout = sv(model.ON_TIMEOUT_LABEL["stop"])
-        self.v_wait_goto, self.v_handler = sv(), sv()
+        self.v_wait_goto, self.v_handler, self.v_retries = sv(), sv(), sv(str(model.DEFAULT_RETRIES))
+        self.v_restart = sv("0")
+        self.v_scale_search = tk.BooleanVar(value=False)
         self.v_script_repeat, self.v_speed, self.v_rand = sv("1"), sv("1.0x"), sv("0")
         self.v_hide = tk.BooleanVar(value=bool(app.settings.get("hide_while_running", False)))
 
@@ -45,11 +50,13 @@ class ActionTab(tk.Frame):
         self._build_editor()
         self._build_list()
         self._build_hotkeys()
+        self._bind_keys()
         self.v_action.trace_add("write", self._on_action_change)
         self.v_wait_mode.trace_add("write", self._on_wait_mode)
         self._on_action_change()
         self._on_wait_mode()
         self.refresh_list()
+        self._update_undo_buttons()
 
     # ------------------------------------------------------------ layout
 
@@ -127,8 +134,10 @@ class ActionTab(tk.Frame):
         entry(r, self.v_repeat, 5, mono=True).pack(side="left")
 
         r = self._row(inner)
-        self._lbl(r, "Comment", LEFT_W).pack(side="left")
-        entry(r, self.v_comment, 40).pack(side="left", fill="x", expand=True)
+        self._lbl(r, "Label", LEFT_W).pack(side="left")
+        entry(r, self.v_label, 12).pack(side="left")
+        self._lbl(r, "Comment").pack(side="left", padx=(12, 6))
+        entry(r, self.v_comment, 28).pack(side="left", fill="x", expand=True)
 
         r = self._row(inner, pady=(4, 0))
         Button(r, "Add", self.add_step, kind="primary").pack(side="left")
@@ -139,7 +148,7 @@ class ActionTab(tk.Frame):
 
         # right: wait / timing
         q = panel(row, width=410)
-        q.pack(side="left", fill="y", padx=(12, 0))
+        q.pack(side="right", fill="y", padx=(12, 0), before=p)
         q.pack_propagate(False)
         inner = frame(q, bg=C["panel"])
         inner.pack(fill="both", expand=True, padx=14, pady=12)
@@ -171,15 +180,25 @@ class ActionTab(tk.Frame):
 
         r = self._row(inner)
         self._lbl(r, "If timed out", 11).pack(side="left")
-        combo(r, self.v_on_timeout, [m[1] for m in model.ON_TIMEOUT], width=17).pack(side="left")
-        self._lbl(r, "Step").pack(side="left", padx=(10, 6))
-        self.e_wait_goto = entry(r, self.v_wait_goto, 4, mono=True)
+        combo(r, self.v_on_timeout, [m[1] for m in model.ON_TIMEOUT], width=26).pack(side="left", fill="x",
+                                                                                  expand=True)
+
+        r = self._row(inner)
+        self._lbl(r, "Retries", 11).pack(side="left")
+        entry(r, self.v_retries, 4, mono=True).pack(side="left")
+        self._lbl(r, "Go to").pack(side="left", padx=(14, 6))
+        self.e_wait_goto = entry(r, self.v_wait_goto, 10, mono=True)
         self.e_wait_goto.pack(side="left")
 
         r = self._row(inner)
         self._lbl(r, "Error handler", 11).pack(side="left")
-        entry(r, self.v_handler, 4, mono=True).pack(side="left")
-        label(r, "step for 'Run error handler'", bg=C["panel"], muted=True, font=F.small).pack(side="left", padx=8)
+        entry(r, self.v_handler, 10, mono=True).pack(side="left")
+        self._lbl(r, "Restarts").pack(side="left", padx=(14, 6))
+        entry(r, self.v_restart, 4, mono=True).pack(side="left")
+
+        r = self._row(inner)
+        check(r, "Find images at other display scales (slower)", self.v_scale_search,
+              command=lambda: self._changed_settings(), bg=C["panel"]).pack(side="left")
 
         self.lbl_wait_hint = label(inner, "", bg=C["panel"], muted=True, font=F.small,
                                    anchor="w", justify="left", wraplength=370)
@@ -193,25 +212,37 @@ class ActionTab(tk.Frame):
         head = frame(p, bg=C["panel"])
         head.pack(fill="x", padx=12, pady=(10, 8))
         cap(head, "Actions in sequence", bg=C["panel"]).pack(side="left")
+        self.btn_undo = Button(head, "Undo", self.undo, small=True)
+        self.btn_undo.pack(side="left", padx=(16, 4))
+        self.btn_redo = Button(head, "Redo", self.redo, small=True)
+        self.btn_redo.pack(side="left")
+        label(head, "Drag rows to reorder. Ctrl+C / Ctrl+V copy and paste steps.", bg=C["panel"], muted=True,
+              font=F.small).pack(side="left", padx=12)
+        Button(head, "Run Logs", self.open_logs, small=True).pack(side="right", padx=(10, 0))
         self.lbl_count = label(head, "", bg=C["panel"], muted=True, font=F.small)
         self.lbl_count.pack(side="right")
-        cols = [("sr", "Sr", 44, False), ("action", "Action", 150, False), ("x", "X", 70, False),
+        cols = [("sr", "Sr", 40, False), ("label", "Label", 76, False), ("action", "Action", 150, False),
+                ("x", "X", 64, False),
                 ("y", "Y", 70, False), ("back", "Cursor back", 86, False), ("delay", "Delay ms", 76, False),
                 ("rep", "Repeat", 60, False), ("cond", "Wait / Condition", 260, True),
                 ("note", "Comment", 170, True)]
         box, self.tree = scrolled_tree(p, cols)
+        self.tree.configure(selectmode="extended")
         box.pack(fill="both", expand=True, padx=1, pady=(0, 1))
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Delete>", lambda e: self.delete_step())
+        self.tree.bind("<ButtonPress-1>", self._drag_start, add="+")
+        self.tree.bind("<B1-Motion>", self._drag_motion, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._drag_end, add="+")
 
         side = frame(row)
-        side.pack(side="left", fill="y", padx=(12, 0))
+        side.pack(side="right", fill="y", padx=(12, 0), before=p)
         self.btn_start2 = Button(side, "Start", self.toggle_run, kind="primary", width=12)
         self.btn_start2.pack(fill="x")
         Button(side, "Test Step", self.test_step, width=12).pack(fill="x", pady=(8, 0))
         frame(side, height=14).pack()
         for text, cmd in (("Move Up", lambda: self.move(-1)), ("Move Down", lambda: self.move(1)),
-                          ("Duplicate", self.duplicate)):
+                          ("Duplicate", self.duplicate), ("Copy", self.copy_steps), ("Paste", self.paste_steps)):
             Button(side, text, cmd, width=12).pack(fill="x", pady=(0, 8))
         frame(side, height=6).pack()
         Button(side, "Delete", self.delete_step, kind="danger", width=12).pack(fill="x", pady=(0, 8))
@@ -260,7 +291,8 @@ class ActionTab(tk.Frame):
                 Button(row, "Capture", lambda v=var: self.capture_image(v), small=True).pack(side="left", padx=(6, 0))
                 Button(row, "Load", lambda v=var: self.load_image(v), small=True).pack(side="left", padx=(4, 0))
             else:
-                entry(row, var, width, mono=kind in ("int", "region", "color")).pack(side="left")
+                entry(row, var, width, mono=kind in ("int", "sint", "percent", "region", "color", "target")
+                      ).pack(side="left")
                 if kind == "region":
                     Button(row, "Draw", lambda v=var: self.draw_region(v), small=True).pack(side="left", padx=(6, 0))
                 elif kind == "color":
@@ -306,6 +338,7 @@ class ActionTab(tk.Frame):
             "delay_ms": model.parse_int(self.v_delay.get() or "0", "Delay", 0),
             "repeat": model.parse_int(self.v_repeat.get() or "1", "Repeat", 1),
             "comment": self.v_comment.get().strip(),
+            "label": self.v_label.get().strip(),
         }
         for key, text, _w, kind in model.FIELD_SPECS.get(a, []):
             raw = self.detail_vars[key].get() if key in self.detail_vars else model.DEFAULTS.get(key, "")
@@ -331,8 +364,12 @@ class ActionTab(tk.Frame):
             w["timeout_s"] = model.parse_int(self.v_wait_timeout.get(), "Timeout", 0)
             w["poll_ms"] = model.parse_int(self.v_wait_poll.get(), "Check every", 20)
             w["on_timeout"] = model.ON_TIMEOUT_ID.get(self.v_on_timeout.get(), "stop")
+            if w["on_timeout"] in ("retry", "retry_handler"):
+                w["retries"] = model.parse_int(self.v_retries.get() or "0", "Retries", 0, 100)
             if w["on_timeout"] == "goto":
-                w["goto"] = model.parse_int(self.v_wait_goto.get(), "Timeout step", 1)
+                w["goto"] = model.parse_target(self.v_wait_goto.get(), "Timeout step")
+                if w["goto"] is None:
+                    raise ValueError("Enter the step number or label to go to when it times out.")
         step["wait"] = w
         err = model.check_step(step)
         if err:
@@ -351,6 +388,7 @@ class ActionTab(tk.Frame):
         self.v_delay.set(str(step.get("delay_ms", 0)))
         self.v_repeat.set(str(step.get("repeat", 1)))
         self.v_comment.set(step.get("comment", ""))
+        self.v_label.set(step.get("label", ""))
         w = step.get("wait") or {}
         mode = w.get("mode", "none")
         self.v_wait_mode.set(model.WAIT_LABEL.get(mode, model.WAIT_LABEL["none"]))
@@ -368,6 +406,7 @@ class ActionTab(tk.Frame):
             self.v_wait_poll.set(str(w.get("poll_ms", 250)))
             self.v_on_timeout.set(model.ON_TIMEOUT_LABEL.get(w.get("on_timeout", "stop")))
             self.v_wait_goto.set(str(w.get("goto") or ""))
+            self.v_retries.set(str(w.get("retries", model.DEFAULT_RETRIES)))
         self.lbl_form_msg.configure(text="")
 
     def _form_step(self):
@@ -381,17 +420,53 @@ class ActionTab(tk.Frame):
         return step
 
     def _selected(self):
-        sel = self.tree.selection()
-        return int(sel[0]) if sel else None
+        """The first selected step (the one shown in the form), or None."""
+        sel = self._selection()
+        return sel[0] if sel else None
 
-    def _changed(self, select=None):
+    def _selection(self):
+        n = len(self.script["steps"])
+        return sorted(int(i) for i in self.tree.selection() if int(i) < n)
+
+    def _editable(self):
+        if self.app.job_running_for(self):
+            self.app.set_status("Stop the script before editing it.", error=True)
+            return False
+        return True
+
+    def _record(self):
+        self.history.record(self.script, self._selection())
+
+    def _changed(self, select=None, sync=True):
+        self.dirty = True
+        if sync:
+            self._sync_settings()
+        self.refresh_list(select)
+        self._update_undo_buttons()
+
+    def _changed_settings(self):
         self.dirty = True
         self._sync_settings()
-        self.refresh_list(select)
+        self.app.update_title()
+
+    def _update_undo_buttons(self):
+        self.btn_undo.set_enabled(self.history.can_undo)
+        self.btn_redo.set_enabled(self.history.can_redo)
+
+    def _check_label_free(self, step, ignore=None):
+        lab = step.get("label")
+        if not lab:
+            return True
+        for i, other in enumerate(self.script["steps"]):
+            if i != ignore and other.get("label") == lab:
+                self.lbl_form_msg.configure(text=f"Step {i + 1} already has the label '{lab}'.")
+                return False
+        return True
 
     def add_step(self):
         step = self._form_step()
-        if step:
+        if step and self._editable() and self._check_label_free(step):
+            self._record()
             self.script["steps"].append(step)
             self._changed(len(self.script["steps"]) - 1)
 
@@ -401,81 +476,214 @@ class ActionTab(tk.Frame):
             self.lbl_form_msg.configure(text="Select a step in the list to update.")
             return
         step = self._form_step()
-        if step:
+        if step and self._editable() and self._check_label_free(step, ignore=i):
+            self._record()
             self.script["steps"][i] = step
             self._changed(i)
 
     def insert_step(self):
         i = self._selected()
         step = self._form_step()
-        if not step:
+        if not step or not self._editable() or not self._check_label_free(step):
             return
-        if i is None:
-            i = 0
-        self.script["steps"].insert(i, step)
-        self._changed(i)
+        self._record()
+        new = editing.insert(self.script, 0 if i is None else i, [step])
+        self._changed(new)
 
     def add_at_cursor(self):
         x, y = inputs.position()
         self.v_x.set(str(x))
         self.v_y.set(str(y))
+        self.v_label.set("")
         step = self._form_step()
-        if step:
+        if step and self._editable():
+            self._record()
             self.script["steps"].append(step)
             self._changed(len(self.script["steps"]) - 1)
             self.app.set_status(f"Added {step['action']} at {x}, {y}")
 
     def move(self, d):
-        i = self._selected()
-        steps = self.script["steps"]
-        if i is None or not 0 <= i + d < len(steps):
+        sel = self._selection()
+        if not sel or not self._editable():
             return
-        steps[i], steps[i + d] = steps[i + d], steps[i]
-        self._changed(i + d)
+        self._record()
+        new = editing.shift(self.script, sel, d)
+        if new == sel:
+            self.history.discard_last()
+            return
+        self._changed(new)
 
     def duplicate(self):
-        i = self._selected()
-        if i is None:
+        sel = self._selection()
+        if not sel or not self._editable():
             return
-        self.script["steps"].insert(i + 1, copy.deepcopy(self.script["steps"][i]))
-        self._changed(i + 1)
+        self._record()
+        self._changed(editing.duplicate(self.script, sel))
 
     def delete_step(self):
-        i = self._selected()
-        if i is None:
+        sel = self._selection()
+        if not sel or not self._editable():
             return
-        del self.script["steps"][i]
-        self._changed(min(i, len(self.script["steps"]) - 1))
+        self._record()
+        nxt = editing.delete(self.script, sel)
+        self._changed(nxt)
+        self.app.set_status(f"Deleted {len(sel)} step{'s' if len(sel) != 1 else ''}. Ctrl+Z brings "
+                            f"{'them' if len(sel) != 1 else 'it'} back.")
 
     def delete_all(self):
-        if not self.script["steps"]:
+        if not self.script["steps"] or not self._editable():
             return
         if messagebox.askyesno("Delete all", "Remove every step from this script?", parent=self):
+            self._record()
             self.script["steps"].clear()
             self._changed()
 
+    def undo(self):
+        if not self._editable():
+            return
+        sel = self.history.undo(self.script, self._selection())
+        if sel is None:
+            self.app.set_status("Nothing to undo.")
+            return
+        self._after_history(sel)
+
+    def redo(self):
+        if not self._editable():
+            return
+        sel = self.history.redo(self.script, self._selection())
+        if sel is None:
+            self.app.set_status("Nothing to redo.")
+            return
+        self._after_history(sel)
+
+    def _after_history(self, sel):
+        self.v_handler.set(str(self.script.get("error_handler") or ""))
+        self._changed(sel, sync=False)
+
+    # ------------------------------------------------------------ clipboard
+
+    def copy_steps(self, cut=False):
+        sel = self._selection()
+        if not sel:
+            return
+        text = editing.copy_payload(self.script, self.assets, sel)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        if cut:
+            if not self._editable():
+                return
+            self._record()
+            self._changed(editing.delete(self.script, sel))
+        self.app.set_status(f"{'Cut' if cut else 'Copied'} {len(sel)} step{'s' if len(sel) != 1 else ''}")
+
+    def paste_steps(self):
+        if not self._editable():
+            return
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            text = ""
+        sel = self._selection()
+        pos = sel[-1] + 1 if sel else len(self.script["steps"])
+        self._record()
+        try:
+            new = editing.paste(self.script, self.assets, text, pos)
+        except ValueError as e:
+            new = None
+            self.app.set_status(f"Could not paste: {e}", error=True)
+        if not new:
+            self.history.discard_last()
+            self.app.set_status("The clipboard has no Clicker steps. Copy steps first.", error=True)
+            return
+        self._refresh_image_lists()
+        self._changed(new)
+        self.app.set_status(f"Pasted {len(new)} step{'s' if len(new) != 1 else ''}")
+
+    # ------------------------------------------------------------ keys and dragging
+
+    def _bind_keys(self):
+        mods = ["Control"] + (["Command"] if sys.platform == "darwin" else [])
+        for m in mods:
+            self.tree.bind(f"<{m}-c>", lambda e: self.copy_steps() or "break")
+            self.tree.bind(f"<{m}-x>", lambda e: self.copy_steps(cut=True) or "break")
+            self.tree.bind(f"<{m}-v>", lambda e: self.paste_steps() or "break")
+            self.tree.bind(f"<{m}-d>", lambda e: self.duplicate() or "break")
+            self.tree.bind(f"<{m}-a>", lambda e: self.tree.selection_set(self.tree.get_children()) or "break")
+            self.app.root.bind_all(f"<{m}-z>", self._key_undo, add="+")
+            self.app.root.bind_all(f"<{m}-y>", self._key_redo, add="+")
+            self.app.root.bind_all(f"<{m}-Shift-Z>", self._key_redo, add="+")
+            self.app.root.bind_all(f"<{m}-Z>", self._key_redo, add="+")
+        self.tree.bind("<Alt-Up>", lambda e: self.move(-1) or "break")
+        self.tree.bind("<Alt-Down>", lambda e: self.move(1) or "break")
+
+    def _typing(self):
+        w = self.focus_get()
+        return isinstance(w, (tk.Entry, tk.Text)) or (w is not None and w.winfo_class() == "TCombobox")
+
+    def _key_undo(self, _e=None):
+        if self.app.current_tab == "actions" and not self._typing():
+            self.undo()
+            return "break"
+
+    def _key_redo(self, _e=None):
+        if self.app.current_tab == "actions" and not self._typing():
+            self.redo()
+            return "break"
+
+    def _drag_start(self, e):
+        row = self.tree.identify_row(e.y)
+        self._drag = {"row": int(row), "moved": False} if row and not (e.state & 0x0005) else None
+
+    def _drag_motion(self, e):
+        d = self._drag
+        if not d or self.app.job_running_for(self):
+            return
+        target = self.tree.identify_row(e.y)
+        if not target or int(target) == d["row"]:
+            return
+        if not d["moved"]:
+            self.history.record(self.script, [d["row"]])
+            d["moved"] = True
+            self.tree.configure(cursor="fleur")
+        new = editing.move_to(self.script, [d["row"]], int(target))
+        d["row"] = new[0]
+        self._changed(new)
+
+    def _drag_end(self, _e=None):
+        if self._drag and self._drag["moved"]:
+            self.tree.configure(cursor="")
+            self.app.set_status(f"Moved to step {self._drag['row'] + 1}. Jumps were renumbered to match.")
+        self._drag = None
+
     def _on_select(self, _e=None):
         i = self._selected()
-        if i is not None and i < len(self.script["steps"]):
+        if i is not None and (self._drag is None or not self._drag["moved"]):
             self.step_to_form(self.script["steps"][i])
 
     def refresh_list(self, select=None):
         self.tree.delete(*self.tree.get_children())
-        for i, s in enumerate(self.script["steps"]):
+        steps = self.script["steps"]
+        for i, s in enumerate(steps):
             xt, yt, cond = model.describe_step(s)
             tags = ["odd" if i % 2 else "even"]
             if model.is_screen_step(s):
                 tags.append("screen")
             if i == self.running_row:
                 tags.append("running")
+            if model.check_step(s, steps):
+                tags.append("error")
             back = ("Yes" if s.get("cursor_back") else "No") if s["action"] in model.MOUSE_ACTIONS else ""
             self.tree.insert("", "end", iid=str(i), tags=tags, values=(
-                i + 1, s["action"], xt, yt, back, s.get("delay_ms", 0), s.get("repeat", 1),
+                i + 1, s.get("label", ""), s["action"], xt, yt, back, s.get("delay_ms", 0), s.get("repeat", 1),
                 cond, s.get("comment", "")))
-        if select is not None and 0 <= select < len(self.script["steps"]):
-            self.tree.selection_set(str(select))
-            self.tree.see(str(select))
-        n = len(self.script["steps"])
+        if select is not None:
+            want = [select] if isinstance(select, int) else list(select)
+            want = [str(i) for i in want if 0 <= i < len(steps)]
+            if want:
+                self.tree.selection_set(want)
+                self.tree.see(want[-1])
+                self.tree.see(want[0])
+        n = len(steps)
         scr = self.script.get("screen")
         where = f", built on {scr['width']} x {scr['height']}" if scr else ""
         self.lbl_count.configure(text=f"{n} action{'s' if n != 1 else ''}{where}")
@@ -579,8 +787,15 @@ class ActionTab(tk.Frame):
             self.script["settings"]["random_delay_ms"] = int(self.v_rand.get() or 0)
         except ValueError:
             pass
-        h = self.v_handler.get().strip()
-        self.script["error_handler"] = int(h) if h.isdigit() else None
+        try:
+            self.script["error_handler"] = model.parse_target(self.v_handler.get(), "Error handler")
+        except ValueError:
+            self.script["error_handler"] = None
+        try:
+            self.script["settings"]["restart_on_failure"] = max(0, int(self.v_restart.get() or 0))
+        except ValueError:
+            pass
+        self.script["settings"]["scale_search"] = bool(self.v_scale_search.get())
 
     def _save_hide(self):
         self.app.settings["hide_while_running"] = bool(self.v_hide.get())
@@ -607,7 +822,11 @@ class ActionTab(tk.Frame):
         self.v_speed.set(f"{sp:g}x" if f"{sp:g}x" in SPEEDS else f"{sp:.1f}x")
         self.v_rand.set(str(st.get("random_delay_ms", 0)))
         self.v_handler.set(str(self.script.get("error_handler") or ""))
+        self.v_restart.set(str(st.get("restart_on_failure", 0)))
+        self.v_scale_search.set(bool(st.get("scale_search", False)))
         self.running_row = None
+        self.history.clear()
+        self._update_undo_buttons()
         self._refresh_image_lists()
         self.refresh_list(0 if self.script["steps"] else None)
 
@@ -667,6 +886,13 @@ class ActionTab(tk.Frame):
         self.app.set_status(f"Saved {os.path.basename(path)}")
         return True
 
+    def open_logs(self):
+        path = self.app.last_log_dir if getattr(self.app, "last_log_dir", None) else runlog.logs_dir()
+        if not os.path.isdir(path):
+            path = runlog.logs_dir()
+        if not runlog.open_folder(path):
+            messagebox.showinfo("Run logs", f"Run logs are saved in:\n{path}", parent=self)
+
     def title_text(self):
         name = os.path.basename(self.path) if self.path else (self.script.get("name") or "Untitled")
         return name + (" *" if self.dirty else "")
@@ -685,7 +911,8 @@ class ActionTab(tk.Frame):
         return Runner(script, self.assets, self.app.emitter("script"), inputs_map=values,
                       speed=st.get("speed", 1.0), repeat=st.get("repeat", 1),
                       random_delay_ms=st.get("random_delay_ms", 0), dry_run=dry,
-                      start_delay=start_delay, label=label_text)
+                      start_delay=start_delay, label=label_text,
+                      save_log=self.app.settings.get("save_run_logs", True))
 
     def toggle_run(self, from_hotkey=False):
         if self.app.job_running_for(self):
@@ -713,9 +940,14 @@ class ActionTab(tk.Frame):
             w["on_timeout"] = "stop"
         for key in ("goto", "else_goto"):
             step.pop(key, None)
+        if step["action"] in model.WHILE_ACTIONS or step["action"] in (
+                "End While", "Go to Step", "Loop Back", "Call Subroutine", "Return"):
+            self.app.set_status("Loops and jumps can only be tested by running the script.", error=True)
+            return
         step["repeat"] = 1
         one["steps"] = [step]
-        one["settings"] = dict(one["settings"], repeat=1)
+        one["settings"] = dict(one["settings"], repeat=1, restart_on_failure=0)
+        one["error_handler"] = None
         job = self._runner(one, 1.5, label_text=f"Test step {i + 1}")
         if job:
             job.repeat = 1
