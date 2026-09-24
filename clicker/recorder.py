@@ -4,12 +4,17 @@ import random
 import threading
 import time
 
-from pynput import keyboard, mouse
-from pynput.keyboard import Key, KeyCode
-from pynput.mouse import Button
+try:
+    from pynput import keyboard, mouse
+    from pynput.keyboard import Key, KeyCode
+    from pynput.mouse import Button
+except ImportError:  # no display (tests, servers): window playback and conversion still work
+    keyboard = mouse = Key = KeyCode = Button = None
 
 from . import inputs, model, vision
 from .runner import Job, JobStopped
+from .target import WindowIO, WindowNotFound, recorded_vk
+from .target import normalize as normalize_target
 
 MOD_KEYS = {
     "ctrl": "ctrl", "ctrl_l": "ctrl", "ctrl_r": "ctrl",
@@ -20,7 +25,7 @@ MOD_KEYS = {
 
 
 def encode_key(key):
-    if isinstance(key, Key):
+    if Key is not None and isinstance(key, Key):
         return {"key": key.name}
     return {"char": getattr(key, "char", None), "vk": getattr(key, "vk", None)}
 
@@ -137,13 +142,54 @@ class Recorder:
         return cleaned
 
 
+MOUSE_EVENTS = ("move", "mouse_down", "mouse_up", "scroll")
+
+
+def to_window(events, origin, size):
+    """Screen positions -> positions inside a window's content area.
+
+    Mouse events outside the window are dropped (a press and its release go together), keys are kept.
+    Returns (events, dropped_count).
+    """
+    ox, oy = origin
+    w, h = size
+    out, dropped, skipped_downs = [], 0, set()
+    for e in events:
+        if e["type"] not in MOUSE_EVENTS:
+            out.append(e)
+            continue
+        x, y = e["x"] - ox, e["y"] - oy
+        inside = 0 <= x < w and 0 <= y < h
+        if e["type"] == "mouse_up":
+            if e.get("button") in skipped_downs:
+                skipped_downs.discard(e.get("button"))
+                dropped += 1
+                continue
+            x, y = min(max(x, 0), w - 1), min(max(y, 0), h - 1)  # a drag may end just outside
+        elif not inside:
+            if e["type"] == "mouse_down":
+                skipped_downs.add(e.get("button"))
+            dropped += 1
+            continue
+        out.append(dict(e, x=x, y=y))
+    return out, dropped
+
+
 class Player(Job):
     kind = "recording"
 
     def __init__(self, events, emit, repeat=1, speed_min=100, speed_max=100,
                  dx_min=0, dx_max=0, dy_min=0, dy_max=0, whole=True,
-                 gap_min=0.0, gap_max=0.0, settle=False, start_delay=0.0):
+                 gap_min=0.0, gap_max=0.0, settle=False, start_delay=0.0,
+                 target=None, recorded_in=None, target_backend=None):
+        """target: play inside this window (background mode). recorded_in: the window the recording's
+        positions are measured from (None = the screen). Positions are converted between the two."""
         super().__init__(emit)
+        self.target = normalize_target(target)
+        self.recorded_in = normalize_target(recorded_in)
+        self.backend = target_backend
+        self.io = None if self.target is None else WindowIO(self.target, backend=target_backend)
+        self.offset = (0, 0)
         self.events = list(events)
         self.repeat = max(0, int(repeat))
         self.speed = (max(1.0, float(speed_min)), max(1.0, float(speed_max)))
@@ -163,6 +209,9 @@ class Player(Job):
         return random.uniform(lo, hi)
 
     def _play(self, ev, dx, dy):
+        if self.io is not None:
+            self._play_window(ev, dx, dy)
+            return
         t = ev["type"]
         if t in ("move", "mouse_down", "mouse_up", "scroll"):
             inputs.move_to(ev["x"] + dx, ev["y"] + dy)
@@ -187,6 +236,38 @@ class Player(Job):
             if k in self.held_keys:
                 self.held_keys.remove(k)
 
+    def _play_window(self, ev, dx, dy):
+        io, t = self.io, ev["type"]
+        if t in MOUSE_EVENTS:
+            io.move_to(ev["x"] + dx, ev["y"] + dy)
+        if t == "mouse_down":
+            self.held_buttons.append(io.press_button(ev["button"]))
+        elif t == "mouse_up":
+            io.release_button(ev["button"])
+            if ev["button"] in self.held_buttons:
+                self.held_buttons.remove(ev["button"])
+        elif t == "scroll":
+            io.scroll(ev["dx"], ev["dy"])
+        elif t == "key_down":
+            self.held_keys.append(io.vk_down(recorded_vk(ev, io.b.char_vk)))
+        elif t == "key_up":
+            vk = recorded_vk(ev, io.b.char_vk)
+            io.vk_up(vk)
+            if vk in self.held_keys:
+                self.held_keys.remove(vk)
+
+    def _place(self):
+        """Find the target window and work out how recorded positions map onto where we play."""
+        if self.io is not None:
+            self.io.attach()
+            vision.set_thread_source(self.io)
+            if self.recorded_in is None:  # recorded on the screen: the window is assumed to be where it was
+                ox, oy = self.io.client_origin()
+                self.offset = (-ox, -oy)
+        elif self.recorded_in is not None:  # recorded in a window, played on the whole screen
+            ox, oy = WindowIO(self.recorded_in, backend=self.backend).client_origin()
+            self.offset = (ox, oy)
+
     def _settle(self, x, y):
         cond = {"kind": "region_stable", "region": [int(x) - 100, int(y) - 100, 200, 200], "stable_ms": 300}
         checker = vision.Checker(cond, lambda n: None)
@@ -198,7 +279,9 @@ class Player(Job):
             if self.start_delay > 0:
                 self.emit("state", f"Starting in {self.start_delay:g} s")
                 self.sleep(self.start_delay)
+            self._place()
             self.emit("state", "running")
+            ox, oy = self.offset
             run = 0
             while self.repeat == 0 or run < self.repeat:
                 run += 1
@@ -223,21 +306,25 @@ class Player(Job):
                         dx, dy = self._rand(self.dx), self._rand(self.dy)
                     if self.settle and ev["type"] == "mouse_down":
                         t0 = time.monotonic()
-                        self._settle(ev["x"] + dx, ev["y"] + dy)
+                        self._settle(ev["x"] + dx + ox, ev["y"] + dy + oy)
                         shift += time.monotonic() - t0
-                    self._play(ev, int(round(dx)), int(round(dy)))
+                    self._play(ev, int(round(dx)) + ox, int(round(dy)) + oy)
                 if self.repeat == 0 or run < self.repeat:
                     self.sleep(self._rand(self.gap))
             ok = True
         except JobStopped as e:
             reason = str(e)
+        except WindowNotFound as e:
+            reason = str(e)
         except Exception as e:
             reason = f"Error: {e}"
         finally:
+            io = self.io or inputs
             for k in self.held_keys:
-                inputs.release_key(k)
+                io.release_key(k)
             for b in self.held_buttons:
-                inputs.release_button(b)
+                io.release_button(b)
+            vision.set_thread_source(None)
             vision.release_thread()
             self.result = (ok, reason)
             self.emit("done", (ok, reason))

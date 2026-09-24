@@ -7,6 +7,8 @@ import time
 import uuid
 
 from . import inputs, model, vision
+from .target import WindowIO, WindowNotFound
+from .target import normalize as normalize_target
 
 OUTPUT_TYPES = [
     ("click_match", "Click at match center"),
@@ -133,8 +135,14 @@ class TriggerEngine:
     rewind(n), stop_all(), run_script(path)
     """
 
-    def __init__(self, get_rules, assets, emit, ctx):
+    def __init__(self, get_rules, assets, emit, ctx, get_target=None, target_backend=None):
+        """get_target() returns the window to watch and act in (background mode), or None for the screen."""
         self.get_rules = get_rules
+        self.get_target = get_target or (lambda: None)
+        self.target_backend = target_backend
+        self.io = inputs
+        self._io_target = None
+        self._missing_at = -1e9
         self.assets = assets
         self.emit = emit
         self.ctx = ctx
@@ -167,8 +175,39 @@ class TriggerEngine:
     def active_count(self):
         return sum(1 for r in self.get_rules() if r.get("enabled"))
 
+    def _window(self, t):
+        """A WindowIO for target t, reused while t stays the same."""
+        if t is None:
+            return None
+        if self._io_target != t or not isinstance(self.io, WindowIO):
+            self.io, self._io_target = WindowIO(t, backend=self.target_backend), t
+        return self.io
+
+    def _use_target(self):
+        """Point this thread's input and screen reading at the chosen window. False while it isn't open."""
+        t = normalize_target(self.get_target())
+        if t is None:
+            if self.io is not inputs:
+                self.io, self._io_target = inputs, None
+                vision.set_thread_source(None)
+            return True
+        io = self._window(t)
+        try:
+            io.attach()
+        except WindowNotFound as e:
+            now = time.monotonic()
+            if now - self._missing_at > 10:
+                self._missing_at = now
+                self.emit("log", ("Monitoring", f"{e}. Waiting for it.", False))
+            return False
+        vision.set_thread_source(io)
+        return True
+
     def _main(self):
         while not self.stop_event.is_set():
+            if not self._use_target():
+                self.stop_event.wait(1.0)
+                continue
             if self._reset_flag:
                 self._reset_flag = False
                 for st in self.states.values():
@@ -212,6 +251,7 @@ class TriggerEngine:
                 self._fire(rule, match, st, running)
                 now = time.monotonic()
             self.stop_event.wait(0.02)
+        vision.set_thread_source(None)
         vision.release_thread()
 
     def _fire(self, rule, match, st, running):
@@ -224,7 +264,13 @@ class TriggerEngine:
         done = []
         try:
             if match and match.w < 4000:
-                self.emit("highlight", match.rect)
+                rect = match.rect
+                if isinstance(self.io, WindowIO):
+                    try:
+                        rect = self.io.to_screen(rect)
+                    except WindowNotFound:
+                        pass
+                self.emit("highlight", rect)
             for o in rule.get("outputs") or []:
                 if self.stop_event.is_set():
                     break
@@ -246,34 +292,35 @@ class TriggerEngine:
     def _output(self, rule, o, match):
         t = o.get("type")
         v = str(o.get("value") or "").strip()
+        io = self.io
         if t == "click_match":
             if not match:
                 raise ValueError("no match position to click")
-            back = inputs.position()
-            inputs.move_to(*match.center)
+            back = io.position()
+            io.move_to(*match.center)
             time.sleep(0.02)
             if v == "double":
-                inputs.click("left", 2)
+                io.click("left", 2)
             else:
-                inputs.click(v or "left", 1)
+                io.click(v or "left", 1)
             time.sleep(0.02)
-            inputs.move_to(*back)
+            io.move_to(*back)
         elif t == "click_at":
             parts = [p.strip() for p in v.split(",")]
             x, y = int(parts[0]), int(parts[1])
             btn = parts[2] if len(parts) > 2 and parts[2] else "left"
-            back = inputs.position()
-            inputs.move_to(x, y)
+            back = io.position()
+            io.move_to(x, y)
             time.sleep(0.02)
             if btn == "double":
-                inputs.click("left", 2)
+                io.click("left", 2)
             else:
-                inputs.click(btn, 1)
-            inputs.move_to(*back)
+                io.click(btn, 1)
+            io.move_to(*back)
         elif t == "press_keys":
-            inputs.press_combo(v)
+            io.press_combo(v)
         elif t == "type_text":
-            inputs.type_text(v)
+            io.type_text(v)
         elif t == "wait_ms":
             self.stop_event.wait(max(0, int(float(v or 0))) / 1000.0)
         elif t == "wait_vanish":
@@ -296,17 +343,29 @@ class TriggerEngine:
         elif t == "notify":
             self.emit("notify", v or rule.get("name"))
         elif t == "beep":
-            inputs.beep()
+            io.beep()
         elif t == "log":
             self.emit("log", (rule.get("name"), v, False))
         else:
             raise ValueError(f"unknown output '{t}'")
 
     def test_rule(self, rule):
-        """Check a rule once right now (called from the UI thread)."""
-        checker = vision.Checker(rule["condition"], self.assets.get)
-        ok, match = checker.check()
-        if rule["condition"].get("kind") in ("pixel_changes", "region_changes"):
-            time.sleep(0.3)
+        """Check a rule once right now (called from the UI thread).
+
+        Returns (ok, match); in background mode the match is in window positions.
+        """
+        t = normalize_target(self.get_target())
+        io = WindowIO(t, backend=self.target_backend) if t else None
+        if io:
+            io.attach()
+            vision.set_thread_source(io)
+        try:
+            checker = vision.Checker(rule["condition"], self.assets.get)
             ok, match = checker.check()
-        return ok, match
+            if rule["condition"].get("kind") in ("pixel_changes", "region_changes"):
+                time.sleep(0.3)
+                ok, match = checker.check()
+            return ok, match
+        finally:
+            if io:
+                vision.set_thread_source(None)

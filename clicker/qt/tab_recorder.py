@@ -8,10 +8,11 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, \
     QVBoxLayout, QWidget
 
-from .. import model, storage, vision
-from ..recorder import Player, Recorder, recording_to_steps
+from .. import model, storage, target, vision
+from ..recorder import Player, Recorder, recording_to_steps, to_window
 from ..storage import AssetStore
 from .glass import GlassPanel, font
+from .runin import RunInButton
 from .widgets import Caption, GlassButton, GlassSwitch
 
 
@@ -53,11 +54,15 @@ class RecorderTab(QWidget):
         self.events = []
         self.path = None
         self.dirty = False
+        self.recorded_in = None   # the window this recording's positions are measured from (None = screen)
+        self._rec_window = None   # (target, origin, size) while recording in a window
         self._build()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(250)
         self._show_counts()
+        if self.btn_runin.target:
+            self._note(self._where_note())
 
     # ------------------------------------------------------------ layout
 
@@ -80,6 +85,11 @@ class RecorderTab(QWidget):
         b = GlassButton("Convert to Action Script", icon="list-bullets")
         b.clicked.connect(self.convert)
         bl.addWidget(b)
+        self.btn_runin = RunInButton(self.main, tip="Record and play back inside one window, so playback "
+                                                    "leaves your mouse and keyboard free")
+        self.btn_runin.set_target(self.main.settings.get("recorder_target"))
+        self.btn_runin.changed.connect(self._target_changed)
+        bl.addWidget(self.btn_runin)
         root.addWidget(bar)
 
         # record / play
@@ -213,6 +223,25 @@ class RecorderTab(QWidget):
         self.main.save_settings()
         return o
 
+    def _target_changed(self, t):
+        self.main.settings["recorder_target"] = t
+        self.main.save_settings()
+        self._note(self._where_note())
+
+    def _where_note(self):
+        t = self.btn_runin.target
+        if not t:
+            if self.recorded_in:
+                return (f"This recording was made in {target.describe(self.recorded_in)}. It plays on the "
+                        "whole screen at that window's current position.")
+            return "Click Start Recording (or press the record hotkey), do the task, then press the hotkey again to stop."
+        where = target.describe(t)
+        text = (f"Recording and playback happen in {where}. Record by using that window normally; clicks "
+                "outside it are left out. Playback goes to the window, so your mouse stays free.")
+        if self.events and not self.recorded_in:
+            text += " This recording was made on the whole screen; it plays as if the window is where it was then."
+        return text
+
     def _tick(self):
         if self.recorder.active:
             self.st_events.value.setText(str(self.recorder.count))
@@ -262,8 +291,18 @@ class RecorderTab(QWidget):
         except ValueError as e:
             self.main.set_status(str(e), error=True)
             return
+        t = self.btn_runin.target
+        self._rec_window = None
+        if t:
+            try:
+                io = target.WindowIO(t)
+                self._rec_window = (t, io.client_origin(), io.bounds()[2:])
+            except Exception as e:
+                self.main.set_status(f"{e}. Open it or choose Whole screen.", error=True)
+                return
         self.recorder.start(clicks=o["clicks"], moves=o["moves"], keys=o["keys"])
-        self._note("Recording. Press the record hotkey to stop.", "error")
+        self._note("Recording" + (f" in {target.describe(t)}" if t else "") + ". Press the record hotkey to stop.",
+                   "error")
         self.main.set_status("Recording")
         self.main.refresh_states()
 
@@ -271,10 +310,20 @@ class RecorderTab(QWidget):
         if not self.recorder.active:
             return
         self.events = self.recorder.stop(trim_last_click=not from_hotkey)
+        dropped = 0
+        self.recorded_in = None
+        if self._rec_window:
+            t, origin, size = self._rec_window
+            self.events, dropped = to_window(self.events, origin, size)
+            self.recorded_in = t
+            self._rec_window = None
         self.path = None
         self.dirty = bool(self.events)
         self._show_counts()
-        self._note(f"Recorded {len(self.events)} events. Save it, play it, or convert it to an Action Script.")
+        self._note(f"Recorded {len(self.events)} events"
+                   + (f" in {target.describe(self.recorded_in)} ({dropped} outside it left out)" if dropped else
+                      f" in {target.describe(self.recorded_in)}" if self.recorded_in else "")
+                   + ". Save it, play it, or convert it to an Action Script.")
         self.main.set_status("Recording stopped")
         self.main.update_title()
         self.main.refresh_states()
@@ -299,12 +348,14 @@ class RecorderTab(QWidget):
                      dx_min=o["dx_min"], dx_max=o["dx_max"], dy_min=o["dy_min"], dy_max=o["dy_max"],
                      whole=o["dx_whole"] and o["dy_whole"],
                      gap_min=o["gap_min"] * mult, gap_max=o["gap_max"] * mult,
-                     settle=o["settle"], start_delay=2.0)
+                     settle=o["settle"], start_delay=0.5 if self.btn_runin.target else 2.0,
+                     target=self.btn_runin.target, recorded_in=self.recorded_in)
         self.main.start_job(job, self)
 
     def on_job(self, kind, payload):
         if kind == "run":
-            self._note(f"Playing run {payload}.")
+            t = self.btn_runin.target
+            self._note(f"Playing run {payload}" + (f" in {target.describe(t)}." if t else "."))
         elif kind == "done":
             ok, reason = payload
             self._note(f"Playback {'finished' if ok else 'stopped'}. {'' if ok else reason}")
@@ -316,8 +367,9 @@ class RecorderTab(QWidget):
                 self, "Discard recording?", "The current recording is not saved. Discard it?") \
                 != QMessageBox.StandardButton.Yes:
             return
-        self.events, self.path, self.dirty = [], None, False
+        self.events, self.path, self.dirty, self.recorded_in = [], None, False, None
         self._show_counts()
+        self._note(self._where_note())
         self.main.update_title()
 
     def open(self):
@@ -327,13 +379,18 @@ class RecorderTab(QWidget):
         if not path:
             return
         try:
-            events, _options = storage.load_recording(path)
+            events, options = storage.load_recording(path)
         except Exception as e:
             QMessageBox.warning(self, "Could not open recording", str(e))
             return
         self.events, self.path, self.dirty = events, path, False
+        self.recorded_in = target.normalize(options.get("recorded_in"))
+        if self.recorded_in:  # it was made in a window: play it there unless the user picks otherwise
+            self.btn_runin.set_target(self.recorded_in)
+            self._target_changed(self.recorded_in)
         self._show_counts()
-        self._note(f"Opened {os.path.basename(path)}.")
+        self._note(f"Opened {os.path.basename(path)}"
+                   + (f", recorded in {target.describe(self.recorded_in)}." if self.recorded_in else "."))
         self.main.update_title()
 
     def save(self, save_as=False):
@@ -345,7 +402,7 @@ class RecorderTab(QWidget):
             if not path:
                 return
         try:
-            storage.save_recording(path, self.events, self._read_options())
+            storage.save_recording(path, self.events, dict(self._read_options(), recorded_in=self.recorded_in))
         except Exception as e:
             QMessageBox.warning(self, "Could not save", str(e))
             return
@@ -367,6 +424,8 @@ class RecorderTab(QWidget):
         script = model.new_script("Converted recording")
         script["steps"] = steps
         script["screen"] = vision.display_info()
+        if self.recorded_in:  # the positions are the window's, so the script runs in that window
+            script["settings"]["target"] = dict(self.recorded_in)
         tab.set_script(script, AssetStore())
         self.main.show_tab("actions")
         self.main.set_status(f"Converted {len(self.events)} events into {len(steps)} steps")

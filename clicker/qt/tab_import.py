@@ -8,11 +8,12 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGridLayout, QHB
                                QLineEdit, QMessageBox, QPlainTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
-from .. import model, storage
+from .. import model, storage, target
 from ..runner import Runner
 from ..storage import AssetStore
 from . import dialogs, glass
 from .glass import GlassPanel, font
+from .runin import RunInButton
 from .tab_triggers import pixmap_from_bgr
 from .widgets import Caption, GlassButton, GlassSwitch, clear_layout
 
@@ -124,6 +125,10 @@ class ImportTab(QWidget):
         self.chips.setSpacing(6)
         txt.addLayout(self.chips)
         hl.addLayout(txt, 1)
+        self.btn_runin = RunInButton(self.main, tip="Run this script inside one window (it starts with the "
+                                                    "window saved in the script, if any)")
+        self.btn_runin.changed.connect(self._target_changed)
+        hl.addWidget(self.btn_runin, 0, Qt.AlignmentFlag.AlignVCenter)
         root.addWidget(head)
 
         mid = QHBoxLayout()
@@ -213,6 +218,7 @@ class ImportTab(QWidget):
     def _show_empty(self):
         self.lbl_name.setText("No script loaded")
         self.lbl_desc.setText("Open a package from Claude, or paste the script text.")
+        self.btn_runin.set_target(None)
         clear_layout(self.chips)
         self.chips.addStretch(1)
         self.tree.clear()
@@ -266,6 +272,7 @@ class ImportTab(QWidget):
         name = script.get("name") or (os.path.splitext(os.path.basename(path))[0] if path else "Pasted script")
         self.lbl_name.setText(os.path.basename(path) if path else name)
         self.lbl_desc.setText(script.get("description") or name)
+        self.btn_runin.set_target((script.get("settings") or {}).get("target"))
         self.refresh()
         self._refresh_recent()
         self.main.update_title()
@@ -386,6 +393,19 @@ class ImportTab(QWidget):
             self.main.set_status(f"Recaptured {choice}")
         dialogs.select_region(self.main, done, f"Drag around '{model.image_stem(choice)}'. Esc cancels.")
 
+    def _target_changed(self, t):
+        if not self.script:
+            self.btn_runin.set_target(None)
+            self.main.set_status("Open a script first.", error=True)
+            return
+        st = self.script.setdefault("settings", {})
+        if t:
+            st["target"] = t
+        else:
+            st.pop("target", None)
+        self.main.set_status(f"This script will run in {target.describe(t)}. Its positions are measured from the "
+                             "window's top left corner." if t else "This script will run on the whole screen.")
+
     def to_actions(self):
         if not self.script:
             return
@@ -468,6 +488,7 @@ class ImportTab(QWidget):
         self.btn_run.setEnabled(has and not running_any)
         self.btn_dry.setEnabled(has and not running_any)
         self.btn_open.setEnabled(has)
+        self.btn_runin.setEnabled(has and not running_mine)
 
     def title_text(self):
         return os.path.basename(self.path) if self.path else "Import script"

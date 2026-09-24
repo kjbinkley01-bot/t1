@@ -19,6 +19,24 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.6: background mode in every tab
+The **Run in** window choice from the Action Script is now in the other tabs too:
+
+* **Macro Recorder:** click **Run in** (top right) and pick a window. Record by using that window normally.
+  Positions are saved relative to the window, and clicks outside it (like stopping on Clicker) are left out.
+  **Play Recording** then sends everything to that window, so your mouse and keyboard stay free. It starts
+  after half a second instead of 2 s, since you don't need to switch windows.
+  * A recording made on the whole screen can also play in a window: it's lined up with where the window is now.
+  * A recording made in a window can still play on the whole screen, at that window's current position.
+  * The window is saved in the `.clkrec` file and comes back when you open it. **Convert to Action Script**
+    brings it along, so the script runs in the same window.
+* **Screen Triggers:** **Watch** (top of the Rules list) picks the window all rules watch. Image and pixel
+  checks read that window's own picture, even while it's covered. Clicks and keys go to it. **Test**, **Grab**,
+  **Draw** and **Capture** use window positions. If the window closes, monitoring waits and picks it up
+  again when it's back.
+* **Import Script:** the **Run in** button shows the window saved in the script and lets you change it
+  before you run it.
+
 ## What's new in 2.5: step progress and smoother motion
 * **Step progress:** while a script runs, the current step shows how long until the next one. A glass fill
   sweeps across the row with a bright leading edge, and the Delay column counts down (`1.6s`). Delays count

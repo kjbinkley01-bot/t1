@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox
 
 from . import model, storage
 from .recorder import Player, Recorder, recording_to_steps
+from .target import describe
 from .storage import AssetStore
 from .theme import C, F, Button, cap, check, combo, entry, frame, label, panel
 
@@ -17,6 +18,7 @@ class RecorderTab(tk.Frame):
         self.app = app
         self.recorder = Recorder(app.hotkeys.is_hotkey)
         self.events = []
+        self.recorded_in = None  # set when a recording made in a window is opened
         self.path = None
         self.dirty = False
         o = app.settings.get("recorder") or {}
@@ -247,6 +249,7 @@ class RecorderTab(tk.Frame):
         if not self.recorder.active:
             return
         self.events = self.recorder.stop(trim_last_click=not from_hotkey)
+        self.recorded_in = None
         self.path = None
         self.dirty = bool(self.events)
         self._show_counts()
@@ -276,7 +279,8 @@ class RecorderTab(tk.Frame):
                      dx_min=o["dx_min"], dx_max=o["dx_max"], dy_min=o["dy_min"], dy_max=o["dy_max"],
                      whole=o["dx_whole"] and o["dy_whole"],
                      gap_min=o["gap_min"] * mult, gap_max=o["gap_max"] * mult,
-                     settle=o["settle"], start_delay=2.0)
+                     settle=o["settle"], start_delay=2.0,
+                     target=self.recorded_in, recorded_in=self.recorded_in)
         self.app.start_job(job, self)
 
     def on_job(self, kind, payload):
@@ -293,7 +297,7 @@ class RecorderTab(tk.Frame):
         if self.dirty and self.events and not messagebox.askyesno(
                 "Discard recording?", "The current recording is not saved. Discard it?", parent=self):
             return
-        self.events, self.path, self.dirty = [], None, False
+        self.events, self.path, self.dirty, self.recorded_in = [], None, False, None
         self._show_counts()
         self.app.update_title()
 
@@ -310,8 +314,10 @@ class RecorderTab(tk.Frame):
             messagebox.showerror("Could not open recording", str(e), parent=self)
             return
         self.events, self.path, self.dirty = events, path, False
+        self.recorded_in = options.get("recorded_in") or None
         self._show_counts()
-        self.lbl_note.configure(text=f"Opened {os.path.basename(path)}.", fg=C["muted"])
+        where = f" It plays in the window it was recorded in: {describe(self.recorded_in)}." if self.recorded_in else ""
+        self.lbl_note.configure(text=f"Opened {os.path.basename(path)}.{where}", fg=C["muted"])
         self.app.update_title()
 
     def save(self, save_as=False):
@@ -324,7 +330,7 @@ class RecorderTab(tk.Frame):
             if not path:
                 return
         try:
-            storage.save_recording(path, self.events, self._read_options())
+            storage.save_recording(path, self.events, dict(self._read_options(), recorded_in=self.recorded_in))
         except Exception as e:
             messagebox.showerror("Could not save", str(e), parent=self)
             return
@@ -347,6 +353,8 @@ class RecorderTab(tk.Frame):
         script["steps"] = steps
         from . import vision
         script["screen"] = vision.display_info()
+        if self.recorded_in:
+            script["settings"]["target"] = dict(self.recorded_in)
         tab.set_script(script, AssetStore())
         self.app.show_tab("actions")
         self.app.set_status(f"Converted {len(self.events)} events into {len(steps)} steps")

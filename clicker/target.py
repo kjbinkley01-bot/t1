@@ -99,6 +99,17 @@ def parse_combo(text):
     return split_combo(text)
 
 
+def recorded_vk(ev, char_vk=None):
+    """The virtual key of a recorded key event ({'key': 'enter'} or {'char': 'a', 'vk': 65})."""
+    if ev.get("key"):
+        return key_to_vk(ev["key"])[0]
+    if ev.get("vk") is not None:
+        return int(ev["vk"])
+    if ev.get("char"):
+        return key_to_vk(ev["char"], char_vk)[0]
+    raise ValueError("Recorded key has no name")
+
+
 # ---------------------------------------------------------------- targeted input and capture
 
 class WindowIO:
@@ -305,6 +316,20 @@ class WindowIO:
                 self.b.post_key(hwnd, vk, False)
             self.held.discard(vk)
         return vks
+
+    def vk_down(self, vk):
+        hwnd = self.attach()
+        if self.target["method"] == "quickswitch":
+            self.b.quick_input(hwnd, [("keydown", vk)])
+        else:
+            if self.target["focus_messages"] and not self.held:
+                self.b.post_focus(hwnd)
+            self.b.post_key(hwnd, vk, True)
+        self.held.add(vk)
+        return vk
+
+    def vk_up(self, vk):
+        self.release_key(vk)
 
     def release_key(self, vk):
         try:

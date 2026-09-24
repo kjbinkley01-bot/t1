@@ -10,9 +10,10 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGridLayout, QHB
                                QListWidget, QMessageBox, QPlainTextEdit, QSlider, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import inputs, model, storage, triggers, vision
+from .. import inputs, model, storage, target, triggers, vision
 from . import dialogs, glass
 from .glass import GlassPanel, font
+from .runin import RunInButton, WindowSpace
 from .widgets import Caption, GlassButton, GlassSwitch
 
 
@@ -81,7 +82,7 @@ class OutputDialog(dialogs.GlassDialog):
         self.hide()
 
         def done():
-            x, y = inputs.position()
+            x, y = self.main.triggers_tab.space.point(*inputs.position())
             parts = [p.strip() for p in self.value.text().split(",")]
             extra = f", {parts[2]}" if len(parts) > 2 and parts[2] else ""
             self.value.setText(f"{x}, {y}{extra}")
@@ -120,6 +121,7 @@ class TriggersTab(QWidget):
         self.main = main
         self.sel_id = None
         self.outputs = []
+        self.space = WindowSpace(main, lambda: main.settings.get("triggers_target"))
         self._build()
         self.refresh_rules()
         if main.rules:
@@ -165,6 +167,12 @@ class TriggersTab(QWidget):
         h.addStretch(1)
         h.addWidget(detail("click the icon to turn a rule on or off"))
         ll.addLayout(h)
+        self.btn_runin = RunInButton(self.main, "Watch", tip="Watch one window's picture and send the rules' "
+                                                             "clicks and keys to it, even while it's covered")
+        self.btn_runin.MAX_NAME = 12
+        self.btn_runin.set_target(self.main.settings.get("triggers_target"))
+        self.btn_runin.changed.connect(self._target_changed)
+        ll.addWidget(self.btn_runin)
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setColumnCount(2)
@@ -376,6 +384,13 @@ class TriggersTab(QWidget):
         lpl.addWidget(self.log)
         root.addWidget(lp)
         self._on_kind()
+
+    def _target_changed(self, t):
+        self.main.settings["triggers_target"] = t
+        self.main.save_settings()
+        self._msg(f"Rules now watch {target.describe(t)}. Positions and regions you Grab or Draw are measured "
+                  "from its top left corner; rules made for the whole screen may need new ones." if t else
+                  "Rules now watch the whole screen.")
 
     def _section_head(self, word, sub):
         h = QHBoxLayout()
@@ -620,6 +635,8 @@ class TriggersTab(QWidget):
         def done(region, img):
             if img is None:
                 return
+            img = self.space.image(region, img)
+            region = self.space.region(region)
             base = self.e_name.text() or "trigger"
             name = dialogs.ask_string(self.main, "Name this image", "Image name", base.lower().replace(" ", "_"))
             if name is None:
@@ -653,15 +670,16 @@ class TriggersTab(QWidget):
     def draw_region(self):
         def done(region, _img):
             if region:
-                self.e_region.setText(model.format_region(region))
+                self.e_region.setText(model.format_region(self.space.region(region)))
         dialogs.select_region(self.main, done, "Drag the area this rule should watch. Esc cancels.")
 
     def grab_pixel(self):
         def done():
-            x, y = inputs.position()
+            sx, sy = inputs.position()
+            x, y = self.space.point(sx, sy)
             self.e_px.setText(str(x))
             self.e_py.setText(str(y))
-            self.e_color.setText(vision.rgb_hex(vision.pixel(x, y)))
+            self.e_color.setText(self.space.pixel_hex(sx, sy, vision.rgb_hex(vision.pixel(sx, sy))))
         dialogs.countdown(self.main, 3, "Grabbing pixel", done)
 
     def test(self, show):
@@ -680,9 +698,9 @@ class TriggersTab(QWidget):
             extra = f" at {match.center[0]}, {match.center[1]} ({int(match.score * 100)}%)"
         self._msg(("Condition is TRUE" if ok else "Condition is false") + extra, "ok" if ok else "warn")
         if show and match:
-            self.main.highlight.flash(match.rect, 1500)
+            self.main.highlight.flash(self.space.to_screen(match.rect), 1500)
         elif show and rule["condition"].get("region"):
-            self.main.highlight.flash(rule["condition"]["region"], 1500)
+            self.main.highlight.flash(self.space.to_screen(rule["condition"]["region"]), 1500)
 
     # ------------------------------------------------------------ import / export
 

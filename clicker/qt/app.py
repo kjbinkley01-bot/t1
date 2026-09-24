@@ -291,7 +291,8 @@ class GlassApp(QMainWindow):
             self.rules, self.trigger_assets = storage.load_triggers(storage.triggers_path())
         except Exception:
             self.rules, self.trigger_assets = [], storage.AssetStore()
-        self.triggers = TriggerEngine(self.get_rules, self.trigger_assets, self.emitter("trigger"), Ctx(self))
+        self.triggers = TriggerEngine(self.get_rules, self.trigger_assets, self.emitter("trigger"), Ctx(self),
+                                      get_target=lambda: self.settings.get("triggers_target"))
         self.hotkeys = HotkeyManager(lambda kind, payload: self.post("hotkey", kind, payload),
                                      self.settings["hotkeys"])
 
