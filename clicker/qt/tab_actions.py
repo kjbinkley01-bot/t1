@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import editing, formlogic, inputs, model, runlog, storage, vision
+from .. import editing, formlogic, inputs, model, runlog, storage, target, vision
 from ..runner import Runner
 from ..storage import AssetStore
 from . import dialogs
@@ -134,6 +134,10 @@ class ActionTab(QWidget):
             b.clicked.connect(cmd)
             bl.addWidget(b)
         bl.addStretch(1)
+        self.btn_runin = GlassButton("Run in: Whole screen", icon="cursor", tip="Run this script inside one window "
+                                     "(background mode) or on the whole screen")
+        self.btn_runin.clicked.connect(self.choose_target)
+        bl.addWidget(self.btn_runin)
         self.e_repeat = field(48)
         self.e_repeat.setText("1")
         self.e_repeat.setToolTip("How many times to run the whole script. 0 repeats until stopped.")
@@ -806,21 +810,68 @@ class ActionTab(QWidget):
         if i is not None and i < self.tree.topLevelItemCount():
             self.tree.scrollToItem(self.tree.topLevelItem(i))
 
+    # ------------------------------------------------------------ background mode
+
+    def _target(self):
+        return target.normalize(self.script["settings"].get("target"))
+
+    def choose_target(self):
+        from .target_dialog import choose_target
+        new = choose_target(self.main, self._target())
+        if new == "unchanged":
+            return
+        if new is None:
+            self.script["settings"].pop("target", None)
+        else:
+            self.script["settings"]["target"] = new
+        self.dirty = True
+        self._show_target()
+        self.main.update_title()
+        if new:
+            self.main.set_status("Positions you Pick, Grab or Draw are now measured from that window's corner.")
+
+    def _show_target(self):
+        t = self._target()
+        self.btn_runin.setText("Run in: " + (target.describe(t) if t else "Whole screen"))
+        self.btn_runin.set_kind("on" if t else "glass")
+        self.btn_runin.updateGeometry()
+
+    def _window_offset(self):
+        """(dx, dy) to turn screen positions into target window positions; (0, 0) on the whole screen."""
+        t = self._target()
+        if not t:
+            return 0, 0
+        try:
+            return target.WindowIO(t).client_origin()
+        except Exception as e:
+            self.main.set_status(f"{e}. Using screen positions.", error=True)
+            return 0, 0
+
+    def _local(self, x, y):
+        ox, oy = self._window_offset()
+        return x - ox, y - oy
+
+    def _local_region(self, region):
+        ox, oy = self._window_offset()
+        x, y, w, h = region
+        return [x - ox, y - oy, w, h]
+
     # ------------------------------------------------------------ capture helpers
 
     def pick_position(self):
         def done():
-            x, y = inputs.position()
+            x, y = self._local(*inputs.position())
             self.e_x.setText(str(x))
             self.e_y.setText(str(y))
         dialogs.countdown(self.main, 3, "Picking position", done)
 
     def grab_pixel(self, color_edit):
         def done():
-            x, y = inputs.position()
+            sx, sy = inputs.position()
+            x, y = self._local(sx, sy)
             self.e_x.setText(str(x))
             self.e_y.setText(str(y))
-            color_edit.setText(vision.rgb_hex(vision.pixel(x, y)))
+            color_edit.setText(vision.rgb_hex(vision.pixel(sx, sy)))
         dialogs.countdown(self.main, 3, "Grabbing pixel", done)
 
     def capture_image(self, combo):
@@ -831,6 +882,17 @@ class ActionTab(QWidget):
             name = dialogs.ask_string(self.main, "Name this image", "Image name", base.lower().replace(" ", "_"))
             if name is None:
                 return
+            t = self._target()
+            if t:
+                # take the template from the window's own picture: that is what the script will search
+                try:
+                    io = target.WindowIO(t)
+                    lx, ly, w, h = self._local_region(region)
+                    shot = io.grab(lx, ly, w, h)
+                    if float(shot.std()) > 1.0:
+                        img = shot
+                except Exception:
+                    pass
             name = self.assets.add_image(img, name or "image")
             self._refresh_image_lists()
             combo.setCurrentText(name)
@@ -856,7 +918,7 @@ class ActionTab(QWidget):
     def draw_region(self, edit):
         def done(region, _img):
             if region:
-                edit.setText(model.format_region(region))
+                edit.setText(model.format_region(self._local_region(region)))
         dialogs.select_region(self.main, done, "Drag the area to search in. Esc cancels.")
 
     def browse_script(self, edit):
@@ -870,13 +932,14 @@ class ActionTab(QWidget):
             self.capture_image(self.cb_target)
         elif mode == "pixel_is":
             def done():
-                x, y = inputs.position()
-                self.cb_target.setCurrentText(f"{x}, {y}, {vision.rgb_hex(vision.pixel(x, y))}")
+                sx, sy = inputs.position()
+                x, y = self._local(sx, sy)
+                self.cb_target.setCurrentText(f"{x}, {y}, {vision.rgb_hex(vision.pixel(sx, sy))}")
             dialogs.countdown(self.main, 3, "Grabbing pixel", done)
         elif mode == "region_stable":
             def got(region, _img):
                 if region:
-                    self.cb_target.setCurrentText(model.format_region(region))
+                    self.cb_target.setCurrentText(model.format_region(self._local_region(region)))
             dialogs.select_region(self.main, got, "Drag the area to watch. Esc cancels.")
 
     # ------------------------------------------------------------ files
@@ -934,6 +997,7 @@ class ActionTab(QWidget):
         self.e_handler.setText(str(self.script.get("error_handler") or ""))
         self.e_restart.setText(str(st.get("restart_on_failure", 0)))
         self.sw_scale.setChecked(bool(st.get("scale_search", False)))
+        self._show_target()
         self.running_row = None
         self.history.clear()
         self._update_undo()

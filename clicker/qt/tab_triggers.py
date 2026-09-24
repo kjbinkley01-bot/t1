@@ -303,8 +303,7 @@ class TriggersTab(QWidget):
         orow = QHBoxLayout()
         self.lst = QListWidget()
         self.lst.setMinimumHeight(110)
-        self.lst.setStyleSheet("QListWidget { background: transparent; border: none; } "
-                               "QListWidget::item { padding: 6px 8px; border-radius: 8px; }")
+        self.lst.setStyleSheet("QListWidget { background: transparent; border: none; }")
         self.lst.doubleClicked.connect(lambda _i: self.edit_output())
         orow.addWidget(self.lst, 1)
         ob = QVBoxLayout()

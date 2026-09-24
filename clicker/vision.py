@@ -24,6 +24,19 @@ def set_test_backend(backend):
     _test_backend = backend
 
 
+def set_thread_source(source):
+    """Make this thread's captures read from source (grab(x, y, w, h) and bounds()), e.g. one window.
+
+    Background mode uses it so a script's image and pixel checks look at its target window. None
+    goes back to the real screen.
+    """
+    _local.source = source
+
+
+def _source():
+    return getattr(_local, "source", None) or _test_backend
+
+
 def _sct():
     s = getattr(_local, "sct", None)
     if s is None:
@@ -45,8 +58,9 @@ def release_thread():
 
 def virtual_screen():
     """(left, top, width, height) covering all monitors."""
-    if _test_backend:
-        return _test_backend.bounds()
+    src = _source()
+    if src:
+        return src.bounds()
     m = _sct().monitors[0]
     return m["left"], m["top"], m["width"], m["height"]
 
@@ -82,8 +96,9 @@ def capture(region=None):
         x, y, w, h = (int(v) for v in region)
     if w <= 0 or h <= 0:
         raise ValueError("Region has no size")
-    if _test_backend:
-        img = _test_backend.grab(x, y, w, h)
+    src = _source()
+    if src:
+        img = src.grab(x, y, w, h)
     else:
         shot = _sct().grab({"left": x, "top": y, "width": w, "height": h})
         img = np.asarray(shot)[:, :, :3]

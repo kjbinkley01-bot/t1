@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from . import inputs, model, runlog, storage, vision
+from . import inputs, model, runlog, storage, target, vision
 
 
 class JobStopped(Exception):
@@ -213,7 +213,7 @@ class Runner(Job):
 
     def __init__(self, script, assets, emit, inputs_map=None, speed=1.0, repeat=1,
                  random_delay_ms=0, dry_run=False, start_delay=0.0, label="Script",
-                 log_dir=None, save_log=True):
+                 log_dir=None, save_log=True, target_backend=None):
         super().__init__(emit)
         self.script = model.copy_script(script)
         self.assets = assets
@@ -237,6 +237,9 @@ class Runner(Job):
         self.run_number = 0
         self._last_yield = time.monotonic()
         self.seen = {}  # where each image was last found, so the next search starts there
+        # background mode: input and screen checks aim at one window instead of the whole desktop
+        self.target = target.normalize((self.script.get("settings") or {}).get("target"))
+        self.io = inputs if self.target is None else target.WindowIO(self.target, backend=target_backend)
         st = self.script.get("settings") or {}
         self.restarts = max(0, int(st.get("restart_on_failure") or 0))
         self.restart_delay = max(0.0, float(st.get("restart_delay_s", 3) or 0))
@@ -290,11 +293,30 @@ class Runner(Job):
             raise JobStopped("Stopped")
         return ok, match
 
+    def _highlight(self, rect):
+        if self.target is not None:
+            try:
+                rect = self.io.to_screen(rect)
+            except Exception:
+                return
+        self.emit("highlight", rect)
+
+    def _attach_target(self):
+        """Background mode: find the target window and read the screen from it on this thread."""
+        if self.target is None:
+            return
+        try:
+            self.io.attach()
+        except target.WindowNotFound as e:
+            raise ScriptFailed(str(e))
+        vision.set_thread_source(self.io)
+        self.note(f"Running in window: {target.describe(self.target)}")
+
     def _release_held(self):
         for b in self.held_buttons:
-            inputs.release_button(b)
+            self.io.release_button(b)
         for k in self.held_keys:
-            inputs.release_key(k)
+            self.io.release_key(k)
         self.held_buttons, self.held_keys = [], []
 
     # ------------------------------------------------------------ main
@@ -326,6 +348,7 @@ class Runner(Job):
         ok = False
         self._open_log()
         try:
+            self._attach_target()
             self._scale_setup()
             if self.start_delay > 0:
                 self.emit("state", f"Starting in {self.start_delay:g} s")
@@ -367,6 +390,7 @@ class Runner(Job):
         finally:
             self.flush_step()
             self._release_held()
+            vision.set_thread_source(None)
             vision.release_thread()
             self.note(f"Result: {reason}")
             if self.run_log:
@@ -476,7 +500,7 @@ class Runner(Job):
         self.sleep(max(0.0, delay) / 1000.0 / self.speed)
         back = None
         if step.get("cursor_back") and step["action"] in model.MOUSE_ACTIONS and not self.dry_run:
-            back = inputs.position()
+            back = self.io.position()
         res = ("next", None)
         try:
             reps = max(1, int(step.get("repeat") or 1))
@@ -488,7 +512,7 @@ class Runner(Job):
                     self.sleep(max(0.03, delay / 1000.0 / self.speed))
         finally:
             if back:
-                inputs.move_to(*back)
+                self.io.move_to(*back)
         return res
 
     def _goto(self, fr, value, i):
@@ -516,7 +540,7 @@ class Runner(Job):
         if a in ("While Image Found", "While Image Not Found"):
             ok, m = self._wait(self._image_cond(step, i, fr.assets), 0, 100, fr.assets)
             if m:
-                self.emit("highlight", m.rect)
+                self._highlight(m.rect)
             return ok if a == "While Image Found" else not ok
         if a == "While Pixel Color":
             cond = {"kind": "pixel_is", "x": step.get("x"), "y": step.get("y"),
@@ -538,12 +562,12 @@ class Runner(Job):
             if dry:
                 self.log(f"{tag} (dry run, not clicked)")
                 if has_xy:
-                    self.emit("highlight", (x - 8, y - 8, 17, 17))
+                    self._highlight((x - 8, y - 8, 17, 17))
                 return ("next", None)
             if has_xy:
-                inputs.move_to(x, y)
+                self.io.move_to(x, y)
                 time.sleep(0.01)
-            inputs.click(button, count, mods)
+            self.io.click(button, count, mods)
             return ("next", None)
 
         if a in model.DRAG_MAP:
@@ -551,14 +575,14 @@ class Runner(Job):
             if dry:
                 return ("next", None)
             if begin:
-                inputs.move_to(x, y)
+                self.io.move_to(x, y)
                 time.sleep(0.02)
-                self.held_buttons.append(inputs.press_button(button))
+                self.held_buttons.append(self.io.press_button(button))
             else:
-                inputs.smooth_move(x, y)
+                self.io.smooth_move(x, y)
                 time.sleep(0.02)
-                b = inputs.get_button(button)
-                inputs.release_button(b)
+                b = self.io.get_button(button)
+                self.io.release_button(b)
                 if b in self.held_buttons:
                     self.held_buttons.remove(b)
             return ("next", None)
@@ -568,29 +592,29 @@ class Runner(Job):
             amount = max(1, int(step.get("amount") or 1))
             if not dry:
                 if has_xy:
-                    inputs.move_to(x, y)
+                    self.io.move_to(x, y)
                     time.sleep(0.01)
-                inputs.scroll(dx * amount, dy * amount)
+                self.io.scroll(dx * amount, dy * amount)
             return ("next", None)
 
         if a == "Move Mouse":
             if not dry:
-                inputs.move_to(x, y)
+                self.io.move_to(x, y)
             return ("next", None)
         if a == "Move Mouse by Offset":
             if not dry:
-                inputs.move_by(x or 0, y or 0)
+                self.io.move_by(x or 0, y or 0)
             return ("next", None)
         if a == "Move Mouse by Angle":
             if not dry:
-                inputs.move_by_angle(x or 0, y or 0)
+                self.io.move_by_angle(x or 0, y or 0)
             return ("next", None)
         if a == "Save Cursor Location":
-            self.saved_pos = inputs.position()
+            self.saved_pos = self.io.position()
             return ("next", None)
         if a == "Restore Cursor Location":
             if self.saved_pos and not dry:
-                inputs.move_to(*self.saved_pos)
+                self.io.move_to(*self.saved_pos)
             return ("next", None)
 
         if a == "Type Text":
@@ -598,19 +622,19 @@ class Runner(Job):
             if dry:
                 self.log(f"{tag}: would type {len(text)} characters")
             else:
-                inputs.type_text(text)
+                self.io.type_text(text)
             return ("next", None)
         if a in ("Send Keystroke", "Hot Key"):
             if not dry:
-                inputs.press_combo(step.get("keys"))
+                self.io.press_combo(step.get("keys"))
             return ("next", None)
         if a == "Key Down":
             if not dry:
-                self.held_keys.extend(inputs.key_down(step.get("keys")))
+                self.held_keys.extend(self.io.key_down(step.get("keys")))
             return ("next", None)
         if a == "Key Up":
             if not dry:
-                for k in inputs.key_up(step.get("keys")):
+                for k in self.io.key_up(step.get("keys")):
                     if k in self.held_keys:
                         self.held_keys.remove(k)
             return ("next", None)
@@ -636,7 +660,7 @@ class Runner(Job):
             if a.startswith("If "):
                 ok, m = self._wait(cond, 0, 100, assets)
                 if m:
-                    self.emit("highlight", m.rect)
+                    self._highlight(m.rect)
                 found = ok
                 truth = found if a == "If Image Found" else not found
                 self.log(f"{tag}: {'found' if found else 'not found'}")
@@ -647,7 +671,7 @@ class Runner(Job):
                 verb = "did not disappear" if a == "Wait for Image to Vanish" else "was not found"
                 return ("fail", f"{model.image_stem(name)} {verb} within {timeout:g} s")
             if m:
-                self.emit("highlight", m.rect)
+                self._highlight(m.rect)
             if a == "Click Image":
                 cx, cy = m.center
                 tx, ty = cx + (x or 0), cy + (y or 0)
@@ -655,13 +679,13 @@ class Runner(Job):
                 if dry:
                     self.log(f"{tag}: found at {tx}, {ty} ({int(m.score * 100)}%), not clicked")
                     return ("next", None)
-                inputs.move_to(tx, ty)
+                self.io.move_to(tx, ty)
                 time.sleep(0.02)
                 btn = step.get("button") or "left"
                 if btn == "double":
-                    inputs.click("left", 2)
+                    self.io.click("left", 2)
                 else:
-                    inputs.click(btn, 1)
+                    self.io.click(btn, 1)
             return ("next", None)
 
         if a in ("Wait for Pixel Color", "If Pixel Color"):
@@ -696,7 +720,7 @@ class Runner(Job):
             self.values[step["var"]] = text
             self.log(f"{tag}: {{{step['var']}}} = \"{model._short(text, 60)}\"")
             if region:
-                self.emit("highlight", tuple(region))
+                self._highlight(tuple(region))
             return ("next", None)
         if a == "Set Variable":
             self.values[step["var"]] = self.substitute(step.get("value"))
@@ -754,11 +778,11 @@ class Runner(Job):
             self.emit("notify", self.substitute(step.get("message")))
             return ("next", None)
         if a == "Beep":
-            inputs.beep()
+            self.io.beep()
             return ("next", None)
         if a == "Show Desktop":
             if not dry:
-                inputs.show_desktop()
+                self.io.show_desktop()
             return ("next", None)
         if a == "Stop Script":
             raise JobStopped(f"Stop Script reached at step {i + 1}")

@@ -359,6 +359,10 @@ def stylesheet(m):
     QMenu::item:selected {{ background: {sel}; }}
     QMenu::separator {{ height: 1px; background: {line}; margin: 5px 8px; }}
     QTreeWidget {{ background: transparent; border: none; outline: none; alternate-background-color: {alt}; }}
+    QListWidget {{ background: {field}; border: 1px solid {line}; border-radius: 12px; padding: 4px; outline: none; }}
+    QListWidget::item {{ padding: 6px 8px; border-radius: 8px; }}
+    QListWidget::item:hover {{ background: {hover_row}; }}
+    QListWidget::item:selected {{ background: {sel}; color: {text}; }}
     QTreeWidget::item {{ height: 30px; border: none; padding-left: 4px; }}
     QTreeWidget::item:hover {{ background: {hover_row}; }}
     QTreeWidget::item:selected {{ background: {sel}; color: {text}; }}

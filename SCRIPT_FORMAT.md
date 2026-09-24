@@ -42,6 +42,12 @@ You can also paste the JSON straight into **Import Script > Paste script text**.
 * `settings.scale_search`: also look for images at other sizes (0.67x to 1.5x). Slower; use it when the
   script must work on screens with different display scaling. Without it Clicker still resizes images
   automatically when `screen.scale` differs from the current display scaling.
+* `settings.target` (optional, Windows): run inside one window instead of on the whole screen, e.g.
+  `{"title": "Notepad", "process": "notepad.exe", "method": "messages", "restore_minimized": true,
+  "focus_messages": true}`. `title` matches part of the window title (either field may be blank, not both);
+  `method` is `messages` (background, your mouse stays free) or `quickswitch` (briefly brings the window
+  forward for real input). All X / Y positions and regions are then measured from the window's content
+  area, and image / pixel checks read the window's own picture.
 * `error_handler`: step jumped to when a wait uses `"on_timeout": "handler"` or `"retry_handler"`.
 * Step numbers everywhere are **1 based**.
 * **Jump targets** (`goto`, `else_goto`, `wait.goto`, `error_handler`) are a step number or a **label**.

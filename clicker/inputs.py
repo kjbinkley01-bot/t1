@@ -9,52 +9,30 @@ from pynput import keyboard, mouse
 from pynput.keyboard import Key, KeyCode
 from pynput.mouse import Button
 
+from .inputs_names import canonical, split_combo
+
 mouse_ctl = mouse.Controller()
 kb_ctl = keyboard.Controller()
 
-ALIASES = {
-    "control": "ctrl", "ctl": "ctrl", "win": "cmd", "windows": "cmd", "super": "cmd",
-    "command": "cmd", "meta": "cmd", "escape": "esc", "return": "enter", "del": "delete",
-    "ins": "insert", "pgup": "page_up", "pageup": "page_up", "pgdn": "page_down",
-    "pagedown": "page_down", "bksp": "backspace", "back": "backspace", "spacebar": "space",
-    "option": "alt", "prtsc": "print_screen", "printscreen": "print_screen",
-    "capslock": "caps_lock", "numlock": "num_lock", "scrolllock": "scroll_lock",
-    "apps": "menu", "arrowup": "up", "arrowdown": "down", "arrowleft": "left",
-    "arrowright": "right", "altgr": "alt_gr",
-}
 MODIFIERS = {"ctrl": Key.ctrl, "shift": Key.shift, "alt": Key.alt}
 
 
 def parse_key(name):
-    n = str(name).strip()
+    n = canonical(name)
     if not n:
         raise ValueError("Empty key name")
     if len(n) == 1:
         return KeyCode.from_char(n)
-    low = ALIASES.get(n.lower().replace(" ", "_").replace("-", "_"),
-                      n.lower().replace(" ", "_").replace("-", "_"))
-    low = ALIASES.get(low.replace("_", ""), low)
-    if low == "plus":
-        return KeyCode.from_char("+")
-    if low in Key.__members__:
-        return Key[low]
-    m = re.fullmatch(r"vk_?(\d+)", low)
+    if n in Key.__members__:
+        return Key[n]
+    m = re.fullmatch(r"vk_?(\d+)", n)
     if m:
         return KeyCode.from_vk(int(m.group(1)))
     raise ValueError(f"Unknown key '{name}'")
 
 
 def parse_combo(text):
-    text = str(text or "").strip()
-    if not text:
-        raise ValueError("No keys given")
-    if text == "+":
-        return [KeyCode.from_char("+")]
-    trailing_plus = text.endswith("++")
-    parts = [p for p in re.split(r"\s*\+\s*", text) if p]
-    if trailing_plus:
-        parts.append("+")
-    return [parse_key(p) for p in parts]
+    return [parse_key(p) for p in split_combo(text)]
 
 
 def press_combo(text, hold=0.02):

@@ -19,6 +19,22 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.4: background mode (Windows)
+Run a script **inside one window** while you keep using your mouse and computer. In the Action Script tab,
+click **Run in: Whole screen** and pick the window (from the list, or by clicking it).
+
+* **Background messages** (default): clicks, keys, typing, scrolling and drags are sent straight to the
+  window. Nothing on your desktop moves. Works with most normal apps.
+* **Quick switch**: for apps that ignore those messages (apps and games that read the physical mouse), the
+  window comes forward for a moment, gets real input, and your window and cursor are put right back.
+* Image checks, pixel checks and Read Text look at **the window's own picture**, so they keep working while
+  it's covered by other windows. **Test capture** in the dialog shows exactly what Clicker sees.
+* Positions are measured from the window's top left corner, so moving the window doesn't break the script.
+  Pick, Grab, Draw and Capture switch to window positions automatically.
+* If the window is minimized, Clicker can restore it **behind** your other windows (most apps stop drawing
+  while minimized, so they can't be seen or clicked there).
+* The window is saved with the script (`settings.target`), and the Classic look runs such scripts too.
+
 ## What's new in 2.3: the Liquid Glass look
 Clicker now opens in a new **Liquid Glass** interface built with Qt, following Apple's iOS 26 Liquid Glass kit
 (the values are in `assets/liquid_glass_tokens.json`): frosted glass panels over a wallpaper, lit from the top

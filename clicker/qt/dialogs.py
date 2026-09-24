@@ -21,6 +21,7 @@ class GlassDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(True)
         self.outer = QVBoxLayout(self)
+        self.outer.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)  # never smaller than the content
         self.outer.setContentsMargins(30, 26, 30, 24)
         self.outer.setSpacing(12)
         t = QLabel(title)
@@ -46,8 +47,15 @@ class GlassDialog(QDialog):
         self.buttons.addWidget(b)
         return b
 
+    def fit(self):
+        """Size to the content (adjustSize would cap tall dialogs at two thirds of the screen)."""
+        scr = self.screen().availableGeometry() if self.screen() else None
+        hint = self.sizeHint()
+        h = min(hint.height(), scr.height() - 40) if scr else hint.height()
+        self.resize(hint.width(), h)
+
     def showEvent(self, e):
-        self.adjustSize()
+        self.fit()
         g = self.main.geometry()
         self.move(g.center() - QPoint(self.width() // 2, self.height() // 2 + 40))
         glass.animate(self, 0.0, 1.0, 180, lambda v: self.setWindowOpacity(float(v)), attr="_fade")
