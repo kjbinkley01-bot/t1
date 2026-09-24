@@ -17,7 +17,7 @@ import sys
 
 import cv2
 import numpy as np
-from PySide6.QtCore import (QEasingCurve, QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
+from PySide6.QtCore import (QEasingCurve, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
                             QObject)
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontDatabase, QIcon, QImage, QLinearGradient, QPainter,
                            QPainterPath, QPen, QPixmap, QRadialGradient)
@@ -225,6 +225,7 @@ class Backdrop(QObject):
         self.size = QSize(0, 0)
         self.sharp = None
         self.frost = None
+        self.generation = 0  # bumps on every rebuild, so cached glass knows to redraw
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._rebuild)
@@ -256,6 +257,7 @@ class Backdrop(QObject):
         frost = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
         self.sharp, self.frost = np_to_pixmap(arr), np_to_pixmap(frost)
         self.size = QSize(w, h)
+        self.generation += 1
         self.changed.emit()
 
 
@@ -296,7 +298,7 @@ def shadow_pixmap(w, h, radius, blur, alpha):
     return pm, pad
 
 
-def paint_glass(p, rect, radius, backdrop, origin, mode, light=0.7, shadow=True, tint=None, lift=0.0):
+def paint_glass(p, rect, radius, backdrop, origin, mode, light=0.7, shadow=True, tint=None, lift=0.0, fast=False):
     """Paint one glass surface.
 
     rect     where to paint, in the widget's coordinates
@@ -317,12 +319,18 @@ def paint_glass(p, rect, radius, backdrop, origin, mode, light=0.7, shadow=True,
     p.fillPath(path, tint or mode.tint)
     if lift:
         p.fillPath(path, QColor(255, 255, 255, int(28 * lift)))
-    # depth: a soft brighter band just inside the edge, like light caught in thick glass
-    edge = QPen(QColor(255, 255, 255, int(26 if mode.dark else 60)), min(10.0, radius * 0.5))
-    p.setPen(edge)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawPath(path)
+    if not fast:
+        # depth: a soft brighter band just inside the edge, like light caught in thick glass
+        edge = QPen(QColor(255, 255, 255, int(26 if mode.dark else 60)), min(10.0, radius * 0.5))
+        p.setPen(edge)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
     p.restore()
+    if fast:  # while the window is being resized: a plain rim, full detail once it settles
+        p.setPen(QPen(QColor(255, 255, 255, int(255 * mode.rim_lo * light)), 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        return
     # specular rim, strongest top left (315 degrees) and a weaker bounce bottom right
     g = QLinearGradient(rect.topLeft(), rect.bottomRight())
     hi = int(255 * mode.rim_hi * light)
@@ -371,6 +379,36 @@ def set_motion(on):
     _motion["on"] = bool(on)
 
 
+class SurfaceCache:
+    """Remembers one rendered surface and redraws it only when its key changes.
+
+    Glass is the expensive part of every frame (anti-aliased paths, a gradient rim, a clipped copy of
+    the frosted wallpaper). Most frames only change something on top of the glass, so the glass itself
+    is drawn once into a pixmap and then copied.
+    """
+
+    def __init__(self):
+        self.key = None
+        self.pm = None
+
+    def get(self, key, w, h, dpr, draw):
+        if key != self.key or self.pm is None:
+            pm = QPixmap(max(1, int(round(w * dpr))), max(1, int(round(h * dpr))))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            draw(p)
+            p.end()
+            self.key, self.pm = key, pm
+        return self.pm
+
+
+def backdrop_key(win):
+    bd = getattr(win, "backdrop", None)
+    return (bd.generation if bd is not None else -1, id(getattr(win, "mode", None)))
+
+
 class GlassPanel(QWidget):
     """A glass card. Put content in it with a layout, like any widget."""
 
@@ -379,16 +417,35 @@ class GlassPanel(QWidget):
         self.radius = radius
         self.light = light
         self.shadow = shadow
+        self._cache = SurfaceCache()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+
+    def glass_radius(self):
+        return self.radius
 
     def paintEvent(self, _e):
         win = self.window()
+        w, h = self.width(), self.height()
+        radius = self.glass_radius()
+        mode = getattr(win, "mode", Mode(True))
+        fast = bool(getattr(win, "live_resize", False))
+        rect = QRectF(1, 1, w - 2, h - 2)
+        # The rim, tint and depth only depend on size, so they are drawn once and reused, even while
+        # scrolling. Only the frosted wallpaper slice behind the panel is copied fresh each paint.
+        key = (w, h, radius, self.light, id(mode), fast)
+
+        def draw(p):
+            paint_glass(p, rect, radius, None, QPoint(0, 0), mode, light=self.light, shadow=False, fast=fast)
+        overlay = self._cache.get(key, w, h, self.devicePixelRatioF(), draw)
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        inset = 1
-        paint_glass(p, QRectF(self.rect()).adjusted(inset, inset, -inset, -inset), self.radius,
-                    getattr(win, "backdrop", None), window_origin(self), getattr(win, "mode", Mode(True)),
-                    light=self.light, shadow=False)
+        bd = getattr(win, "backdrop", None)
+        if bd is not None and bd.frost is not None:
+            o = window_origin(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setClipPath(rounded(rect, radius))
+            p.drawPixmap(rect, bd.frost, QRectF(o.x() + 1, o.y() + 1, w - 2, h - 2))
+            p.setClipping(False)
+        p.drawPixmap(0, 0, overlay)
         p.end()
 
 

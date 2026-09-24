@@ -1,7 +1,7 @@
 """Glass controls: buttons, segmented tabs, switches, fields and the step table styling."""
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QHBoxLayout, QLabel, QSizePolicy,
                                QWidget)
 
@@ -92,35 +92,60 @@ class GlassButton(QAbstractButton):
             fg = QColor(m.faint)
         return None, fg, True
 
-    def paintEvent(self, _e):
-        m = mode_of(self)
-        p = QPainter(self)
+    def _capsule(self, m, w, h):
+        """The button's glass capsule as a cached pixmap (hover is quantized to 16 steps)."""
+        hq = round(self._hover * 16) / 16
+        dpr = self.devicePixelRatioF()
+        key = (int(w), int(h), self.kind, hq, self.isEnabled(), id(m), dpr)
+        pm = _CAPSULES.get(key)
+        if pm is not None:
+            return pm
+        pm = QPixmap(max(1, int(w * dpr)), max(1, int(h * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        # pressed controls shrink a little, like the kit's springy tiles
-        k = 1 - 0.045 * self._press
-        r = QRectF(r.center().x() - r.width() * k / 2, r.center().y() - r.height() * k / 2, r.width() * k,
-                   r.height() * k)
-        radius = r.height() / 2
-        fill, fg, is_glass = self._colors(m)
-        if not self.isEnabled():
-            p.setOpacity(0.55)
+        r = QRectF(0, 0, w, h)
+        radius = h / 2
+        saved = self._hover
+        self._hover = hq
+        fill, _fg, is_glass = self._colors(m)
+        self._hover = saved
         if is_glass:
-            well = QColor(m.well)
-            hov = QColor(m.well_hover)
-            t = self._hover
-            well = QColor(int(well.red() + (hov.red() - well.red()) * t), int(well.green() + (hov.green() - well.green()) * t),
-                          int(well.blue() + (hov.blue() - well.blue()) * t),
-                          int(well.alpha() + (hov.alpha() - well.alpha()) * t))
-            paint_glass(p, r, radius, None, window_origin(self), m, light=0.55 + 0.25 * self._hover, shadow=False,
-                        tint=well)
+            well, hov = QColor(m.well), QColor(m.well_hover)
+            well = QColor(int(well.red() + (hov.red() - well.red()) * hq),
+                          int(well.green() + (hov.green() - well.green()) * hq),
+                          int(well.blue() + (hov.blue() - well.blue()) * hq),
+                          int(well.alpha() + (hov.alpha() - well.alpha()) * hq))
+            paint_glass(p, r, radius, None, QPoint(0, 0), m, light=0.55 + 0.25 * hq, shadow=False, tint=well)
         else:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(fill)
             p.drawPath(rounded(r, radius))
-            paint_glass(p, r, radius, None, window_origin(self), m, light=0.45, shadow=False,
-                        tint=QColor(0, 0, 0, 0))
-        # content
+            paint_glass(p, r, radius, None, QPoint(0, 0), m, light=0.45, shadow=False, tint=QColor(0, 0, 0, 0))
+        p.end()
+        if len(_CAPSULES) > 1500:
+            _CAPSULES.clear()
+        _CAPSULES[key] = pm
+        return pm
+
+    def paintEvent(self, _e):
+        m = mode_of(self)
+        p = QPainter(self)
+        base = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if not self.isEnabled():
+            p.setOpacity(0.55)
+        pm = self._capsule(m, base.width(), base.height())
+        # pressed controls shrink a little, like the kit's springy tiles
+        k = 1 - 0.045 * self._press
+        r = QRectF(base.center().x() - base.width() * k / 2, base.center().y() - base.height() * k / 2,
+                   base.width() * k, base.height() * k)
+        if k < 0.999:
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.drawPixmap(r, pm, QRectF(pm.rect()))
+        else:
+            p.drawPixmap(base.topLeft(), pm)
+        _fill, fg, _g = self._colors(m)
         isz = 14 if self.small else 17
         text = self.text()
         fm = QFontMetrics(self.font())
@@ -129,8 +154,8 @@ class GlassButton(QAbstractButton):
         total = (isz if self.icon_name else 0) + gap + tw
         x = r.center().x() - total / 2
         if self.icon_name:
-            pm = icon_pixmap(self.icon_name, fg, isz, self.devicePixelRatioF())
-            p.drawPixmap(QPointF(x, r.center().y() - isz / 2), pm)
+            p.drawPixmap(QPointF(x, r.center().y() - isz / 2), icon_pixmap(self.icon_name, fg, isz,
+                                                                            self.devicePixelRatioF()))
             x += isz + gap
         if text:
             p.setPen(fg)
@@ -138,6 +163,9 @@ class GlassButton(QAbstractButton):
             p.drawText(QRectF(x, r.y(), tw + 2, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        text)
         p.end()
+
+
+_CAPSULES = {}
 
 
 class SegmentedTabs(QWidget):
@@ -222,18 +250,27 @@ class SegmentedTabs(QWidget):
 
     def paintEvent(self, _e):
         m = mode_of(self)
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        win = self.window()
         slots, total = self._slots()
-        bar = QRectF(0.5, 0.5, total, self.height() - 1)
-        paint_glass(p, bar, bar.height() / 2, getattr(self.window(), "backdrop", None), window_origin(self), m,
-                    light=0.7, shadow=False)
+        origin = window_origin(self)
+        dpr = self.devicePixelRatioF()
+        h = self.height()
+
+        def draw_bar(pp):
+            bar = QRectF(0.5, 0.5, total, h - 1)
+            paint_glass(pp, bar, bar.height() / 2, getattr(win, "backdrop", None), origin, m, light=0.7, shadow=False)
+        if not hasattr(self, "_bar_cache"):
+            self._bar_cache = glass.SurfaceCache()
+        bar_pm = self._bar_cache.get((self.width(), h, total, origin.x(), origin.y(), glass.backdrop_key(win)),
+                                     self.width(), h, dpr, draw_bar)
         if self._lens is None:
             self._lens = slots[self.current]
         lx, lw = self._lens
-        lens = QRectF(lx, 5, lw, self.height() - 10)
-        paint_glass(p, lens, lens.height() / 2, None, window_origin(self), m, light=0.9, shadow=False,
-                    tint=QColor(255, 255, 255, 64 if m.dark else 210))
+        lens_pm = _make_lens(m, int(round(lw)), h - 10, dpr)
+        p = QPainter(self)
+        p.drawPixmap(0, 0, bar_pm)
+        p.drawPixmap(QPointF(lx, 5), lens_pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setFont(self.font())
         for key, text in self.tabs:
             sx, w = slots[key]
@@ -243,6 +280,28 @@ class SegmentedTabs(QWidget):
             p.setPen(c)
             p.drawText(QRectF(sx, 0, w, self.height()), Qt.AlignmentFlag.AlignCenter, text)
         p.end()
+
+
+_LENSES = {}  # the tab lens at each width it passes through while gliding
+
+
+def _make_lens(m, w, h, dpr):
+    key = (w, h, id(m), dpr)
+    pm = _LENSES.get(key)
+    if pm is None:
+        pm = QPixmap(max(1, int(w * dpr)), max(1, int(h * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        paint_glass(p, QRectF(0, 0, w, h), h / 2, None, QPoint(0, 0), m, light=0.9, shadow=False,
+                    tint=QColor(255, 255, 255, 64 if m.dark else 210))
+        p.end()
+        if len(_LENSES) > 400:
+            _LENSES.clear()
+        _LENSES[key] = pm
+    return pm
+
 
 
 class GlassSwitch(QCheckBox):

@@ -62,3 +62,27 @@ def test_icons_are_tinted(qapp):
 
 def test_bundled_font_loads(qapp):
     assert glass.load_fonts()
+
+
+def test_surface_cache_draws_once_per_key(qapp):
+    calls = []
+    cache = glass.SurfaceCache()
+    for _ in range(5):
+        cache.get(("a", 10), 40, 20, 1.0, lambda p: calls.append(1))
+    assert len(calls) == 1
+    cache.get(("b", 10), 40, 20, 1.0, lambda p: calls.append(1))
+    assert len(calls) == 2
+
+
+def test_fast_glass_skips_the_depth_band(qapp):
+    img = QImage(200, 120, QImage.Format.Format_ARGB32)
+    for fast in (False, True):
+        img.fill(QColor(0, 0, 0))
+        p = QPainter(img)
+        glass.paint_glass(p, QRectF(10, 10, 180, 100), 26, None, QPoint(0, 0), glass.Mode(True), shadow=False,
+                          fast=fast)
+        p.end()
+        inner = QColor(img.pixel(12, 60)).lightness()  # just inside the left edge, where the band sits
+        if not fast:
+            full = inner
+    assert full > inner

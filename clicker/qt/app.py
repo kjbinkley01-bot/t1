@@ -10,8 +10,8 @@ import traceback
 import webbrowser
 
 from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter
-from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import model, storage, updates, vision
@@ -19,7 +19,7 @@ from ..core import CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
 from ..triggers import TriggerEngine
 from . import glass
-from .glass import Backdrop, Mode, font, icon_pixmap, paint_glass, window_origin
+from .glass import Backdrop, Mode, font, icon_pixmap, paint_glass
 from .widgets import GlassButton, SegmentedTabs, apply_style
 
 TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"), ("triggers", "Screen Triggers"),
@@ -30,24 +30,101 @@ AUTOSAVE_MS = 60_000
 class Surface(QWidget):
     """The window's content area: paints the sharp wallpaper that the glass frosts."""
 
+    def __init__(self):
+        super().__init__()
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)  # the wallpaper covers every pixel
+
     def paintEvent(self, _e):
-        bd = self.window().backdrop
+        win = self.window()
+        bd = win.backdrop
         p = QPainter(self)
         if bd.sharp is not None:
-            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            p.drawPixmap(self.rect(), bd.sharp)
+            if bd.sharp.size() == self.size():
+                p.drawPixmap(0, 0, bd.sharp)
+            else:  # mid resize: a quick stretch until the wallpaper is rebuilt at the new size
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, not getattr(win, "live_resize", False))
+                p.drawPixmap(self.rect(), bd.sharp)
         p.end()
 
 
-class StatusPill(QWidget):
+class StatusPill(glass.GlassPanel):
     """The bottom status bar as a slim glass capsule."""
+
+    def __init__(self):
+        super().__init__(light=0.6)
+
+    def glass_radius(self):
+        return (self.height() - 2) / 2
+
+
+_swatches = {}
+
+
+def swatch_pixmap(hexc, dpr):
+    """A small round color chip (cached; restyling a label with a style sheet 8 times a second is slow)."""
+    pm = _swatches.get((hexc, dpr))
+    if pm is None:
+        pm = QPixmap(int(12 * dpr), int(12 * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QColor(255, 255, 255, 110))
+        p.setBrush(QColor(hexc))
+        p.drawEllipse(QRectF(0.5, 0.5, 11, 11))
+        p.end()
+        if len(_swatches) > 512:
+            _swatches.clear()
+        _swatches[(hexc, dpr)] = pm
+    return pm
+
+
+class PageTransition(QWidget):
+    """Cross-fades from a snapshot of the old tab to the new one, which rises gently into place."""
+
+    DURATION = 260
+    RISE = 14
+
+    def __init__(self, parent, rect, old_pm):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        # The snapshots cover every pixel, so Qt must not repaint the live page underneath each frame.
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setGeometry(rect)
+        self.old_pm, self.new_pm, self.t = old_pm, None, 0.0
+        self.show()
+        self.raise_()
+
+    def start(self, new_pm):
+        self.new_pm = new_pm
+        glass.animate(self, 0.0, 1.0, self.DURATION, self._step, curve=QEasingCurve.Type.OutCubic,
+                      done=self.finish, attr="_anim")
+
+    def _step(self, v):
+        self.t = float(v)
+        self.update()
+
+    def finish(self):
+        """End the transition (safe to call more than once)."""
+        if getattr(self, "_done", False):
+            return
+        self._done = True
+        a, self._anim = getattr(self, "_anim", None), None
+        if a is not None:
+            try:
+                a.stop()
+            except RuntimeError:
+                pass  # the animation already finished and was cleaned up
+        self.hide()
+        self.deleteLater()
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w = self.window()
-        paint_glass(p, QRectF(self.rect()).adjusted(1, 1, -1, -1), (self.height() - 2) / 2, w.backdrop,
-                    window_origin(self), w.mode, light=0.6, shadow=False)
+        p.drawPixmap(0, 0, self.old_pm)
+        if self.new_pm is not None:
+            p.setOpacity(self.t)
+            p.drawPixmap(0, int(round(self.RISE * (1 - self.t))), self.new_pm)
         p.end()
 
 
@@ -219,6 +296,7 @@ class GlassApp(QMainWindow):
         self._poll_timer.timeout.connect(self._poll)
         self._poll_timer.start(30)
         QTimer.singleShot(2500, self.check_updates)
+        QTimer.singleShot(400, self._warm_pages)
         QTimer.singleShot(700, self._offer_recovery)
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._autosave)
@@ -344,10 +422,13 @@ class GlassApp(QMainWindow):
         self.setMinimumWidth(min(need, scr.width() - 40))
 
     def resizeEvent(self, e):
+        if self.isVisible() and self.backdrop.sharp is not None:
+            self.live_resize = True  # panels draw lighter glass until the size settles
         self.backdrop.resize(self.centralWidget().size() if self.centralWidget() else e.size())
         super().resizeEvent(e)
 
     def _repaint_all(self):
+        self.live_resize = False
         self.centralWidget().update()
         for w in self.centralWidget().findChildren(QWidget):
             w.update()
@@ -359,13 +440,45 @@ class GlassApp(QMainWindow):
         self.current_tab = key
         self.tabbar.select(key)
         page = self.pages[key]
-        self.stack.setCurrentWidget(page)
-        if glass.motion_on() and old != key:
-            eff = QGraphicsOpacityEffect(page)
-            page.setGraphicsEffect(eff)
-            glass.animate(page, 0.0, 1.0, 220, lambda v: eff.setOpacity(float(v)), attr="_fade",
-                          done=lambda: page.setGraphicsEffect(None))
+        if not glass.motion_on() or old == key or not self.isVisible():
+            self.stack.setCurrentWidget(page)
+            self.update_title()
+            return
+        # Animate between two snapshots instead of the live pages: every frame is then two image
+        # copies, however many glass panels and controls the pages hold.
+        area = self.stack.geometry()
+        surface = self.centralWidget()
+        old_pm = surface.grab(area)
+        tr = getattr(self, "_transition", None)
+        if tr is not None:
+            try:
+                tr.finish()
+            except RuntimeError:
+                pass  # already deleted
+        tr = PageTransition(surface, area, old_pm)
+        self._transition = tr
+
+        def swap():
+            if self._transition is not tr:
+                return
+            self.stack.setCurrentWidget(page)
+            tr.hide()  # keep the snapshot of the new page free of the overlay itself
+            new_pm = surface.grab(area)
+            tr.show()
+            tr.start(new_pm)
+        QTimer.singleShot(0, swap)  # render the new page on the next frame, not in the same one
         self.update_title()
+
+    def _warm_pages(self):
+        """Lay out and draw every tab once, off screen, so the first visit to each isn't slower."""
+        size = self.stack.size()
+        for key, area in self.pages.items():
+            if area is self.stack.currentWidget():
+                continue
+            area.resize(size)
+            area.widget().adjustSize()
+            area.ensurePolished()
+            area.grab()
 
     def update_title(self):
         t = getattr(self, "tabs", {}).get(self.current_tab)
@@ -550,7 +663,7 @@ class GlassApp(QMainWindow):
             if kind == "cursor":
                 x, y, hexc = payload
                 self.lbl_cursor.setText(f"X {x:>5}   Y {y:>5}")
-                self.swatch.setStyleSheet(f"background:{hexc}; border-radius:6px; border:1px solid rgba(255,255,255,90);")
+                self.swatch.setPixmap(swatch_pixmap(hexc, self.devicePixelRatioF()))
                 self.lbl_pixel.setText(hexc)
             elif kind == "update":
                 self._on_update_result(payload)
