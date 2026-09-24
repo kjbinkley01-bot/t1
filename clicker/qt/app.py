@@ -840,12 +840,8 @@ class GlassApp(QMainWindow):
 
 
 def main():
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        except Exception:
-            pass
+    # No DPI call here: Qt sets per-monitor v2 awareness itself, and setting it first made Qt print
+    # "SetProcessDpiAwarenessContext() failed: Access is denied" in the console.
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(model.APP_NAME)
     glass.load_fonts()

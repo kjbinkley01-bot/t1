@@ -856,9 +856,12 @@ class App:
 
 def main():
     if sys.platform == "win32":
+        import ctypes
         try:
-            import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+            # Per-monitor v2, the same level Qt uses, so switching to Liquid Glass later doesn't make Qt
+            # warn that it could not change it (awareness can be set only once per process).
+            if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
             try:
                 ctypes.windll.user32.SetProcessDPIAware()
