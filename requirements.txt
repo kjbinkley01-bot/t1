@@ -3,3 +3,4 @@ mss>=9.0
 numpy>=1.26
 opencv-python-headless>=4.10
 pillow>=10.0
+pytesseract>=0.3.10
