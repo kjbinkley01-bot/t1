@@ -1,4 +1,4 @@
-"""The Liquid Glass window (Qt). Same engine, scripts, hotkeys and settings as Classic."""
+"""The Clicker window (Qt, Liquid Glass look)."""
 
 import datetime
 import json
@@ -264,7 +264,7 @@ class Highlight(QWidget):
 class GlassApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        sys.setswitchinterval(0.001)  # see the Classic app: keeps the window smooth during busy scripts
+        sys.setswitchinterval(0.001)  # short thread slices keep the window smooth during busy scripts
         self.settings = storage.load_settings()
         glass.set_motion(not self.settings.get("reduce_motion", False))
         self.wallpaper = self.settings.get("wallpaper", "aurora")
@@ -538,10 +538,6 @@ class GlassApp(QMainWindow):
         motion = QAction("Reduce motion", m, checkable=True, checked=not glass.motion_on())
         motion.triggered.connect(self.set_reduce_motion)
         m.addAction(motion)
-        m.addSeparator()
-        classic = QAction("Switch to Classic look", m)
-        classic.triggered.connect(self.switch_to_classic)
-        m.addAction(classic)
         m.exec(self.btn_style.mapToGlobal(QPoint(0, self.btn_style.height() + 6)))
 
     def _apply_mode(self, dark):
@@ -579,17 +575,6 @@ class GlassApp(QMainWindow):
         glass.set_motion(not on)
         self.settings["reduce_motion"] = bool(on)
         self.save_settings()
-
-    def switch_to_classic(self):
-        if QMessageBox.question(self, "Switch to Classic",
-                                "Restart Clicker with the Classic look? Unsaved work will be offered back.") \
-                != QMessageBox.StandardButton.Yes:
-            return
-        self.settings["ui"] = "classic"
-        self.save_settings()
-        self._autosave(force=True)
-        self._restart = True
-        self.close()
 
     # ------------------------------------------------------------ jobs
 
@@ -1069,8 +1054,7 @@ class GlassApp(QMainWindow):
         self._clear_autosave()
 
     def closeEvent(self, e):
-        restart = getattr(self, "_restart", False)
-        if (not restart and not self._quitting and self.settings.get("tray_on_close")
+        if (not self._quitting and self.settings.get("tray_on_close")
                 and self.tray.ensure()):
             e.ignore()
             self.hide()
@@ -1080,7 +1064,7 @@ class GlassApp(QMainWindow):
                 self.tray.message("Clicker is still running",
                                   "Script hotkeys keep working. Right-click the tray icon to quit.")
             return
-        if not restart and not self.action_tab.confirm_discard("closing"):
+        if not self.action_tab.confirm_discard("closing"):
             self._quitting = False
             e.ignore()
             return
@@ -1096,8 +1080,7 @@ class GlassApp(QMainWindow):
         self.highlight.close()
         if self.recording_active():
             self.recorder_tab.recorder.stop()
-        if not getattr(self, "_restart", False):
-            self._clear_autosave()
+        self._clear_autosave()
         self.save_rules()
         self.save_settings()
         e.accept()
@@ -1115,9 +1098,5 @@ def main():
     glass.load_fonts()
     win = GlassApp()
     win.show()
-    code = app.exec()
-    if getattr(win, "_restart", False):
-        from ..app import main as classic_main
-        classic_main()
-    return code
+    return app.exec()
 

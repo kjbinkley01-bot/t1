@@ -84,7 +84,7 @@ click **Run in: Whole screen** and pick the window (from the list, or by clickin
   Pick, Grab, Draw and Capture switch to window positions automatically.
 * If the window is minimized, Clicker can restore it **behind** your other windows (most apps stop drawing
   while minimized, so they can't be seen or clicked there).
-* The window is saved with the script (`settings.target`), and the Classic look runs such scripts too.
+* The window is saved with the script (`settings.target`).
 
 ## What's new in 2.3: the Liquid Glass look
 Clicker now opens in a new **Liquid Glass** interface built with Qt, following Apple's iOS 26 Liquid Glass kit
@@ -95,9 +95,7 @@ left, with pill buttons, a tab lens that glides, iOS style switches and glass no
   Blossom, or **your own picture**. Light wallpapers switch the glass to its light mode.
 * **All four tabs** (Action Script, Macro Recorder, Screen Triggers, Import Script) are rebuilt in glass
   with every feature of the Classic look.
-* **Classic is still there:** the drop icon > *Switch to Classic look*, or start with
-  `python clicker_app.py --classic`. From Classic, *Style > Liquid Glass (new look)* switches back. Unsaved
-  work comes along either way.
+* (The Classic look that stayed alongside it was removed in 2.8.)
 * **Shortcut keys** now live in Settings (the gear icon).
 * Icons are Phosphor (MIT) and the font is Inter (OFL), both bundled; Apple's SF Symbols and SF Pro may
   only be used on Apple platforms.
