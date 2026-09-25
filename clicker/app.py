@@ -12,7 +12,7 @@ import traceback
 import webbrowser
 from tkinter import messagebox
 
-from . import anim, model, runlog, storage, theme, ui, updates, vision
+from . import alerts, anim, model, runlog, storage, theme, ui, updates, vision
 from .hotkeys import HotkeyManager
 from .runner import Runner
 from .tab_actions import ActionTab
@@ -730,6 +730,8 @@ class App:
             self.last_log_dir = payload
         elif kind == "done":
             ok, reason = payload
+            if self.job is not None:
+                alerts.notify(self.settings, alerts.run_event(self.job, ok, reason))
             if self._hid_window:
                 self._hid_window = False
                 self.root.deiconify()

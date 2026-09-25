@@ -247,6 +247,16 @@ class SettingsDialog(GlassDialog):
         row.addWidget(path, 1)
         self.body.addLayout(row)
         self.body.addSpacing(6)
+        self.body.addWidget(Caption("Alerts"))
+        arow = QHBoxLayout()
+        b = GlassButton("Alerts...", icon="lightning", small=True)
+        b.clicked.connect(self._alerts)
+        arow.addWidget(b)
+        self.lbl_alerts = QLabel(self._alerts_text())
+        self.lbl_alerts.setProperty("role", "detail")
+        arow.addWidget(self.lbl_alerts, 1)
+        self.body.addLayout(arow)
+        self.body.addSpacing(6)
         self.body.addWidget(Caption("Updates"))
         self.sw_upd = GlassSwitch("Check GitHub for a new version once a day")
         self.sw_upd.setChecked(s.get("check_updates", True))
@@ -293,6 +303,17 @@ class SettingsDialog(GlassDialog):
         self.body.addSpacing(6)
         self.body.addWidget(ocr)
         self.add_buttons("Save")
+
+    def _alerts_text(self):
+        from .. import alerts
+        cfg = alerts.config(self.main.settings)
+        where = [n for n, k in (("Discord", "discord"), ("phone", "ntfy")) if cfg.get(k, "").strip()]
+        return ("Sending to " + " and ".join(where)) if where else "Phone or Discord messages when a run ends"
+
+    def _alerts(self):
+        from .alerts_dialog import open_alerts
+        open_alerts(self.main)
+        self.lbl_alerts.setText(self._alerts_text())
 
     def _forget_fields(self, *_):
         for action, f in self._hk_fields:

@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter,
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import model, storage, updates, vision
+from .. import alerts, model, storage, updates, vision
 from ..core import CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
 from ..triggers import TriggerEngine
@@ -699,6 +699,10 @@ class GlassApp(QMainWindow):
             if kind == "log":
                 rule, msg, hit = payload
                 self.triggers_tab.add_log(rule, msg, hit)
+                if hit:
+                    alerts.notify(self.settings, alerts.trigger_event(rule, msg))
+                elif "Waiting for it" in str(msg):
+                    alerts.notify(self.settings, dict(alerts.trigger_event("Screen Triggers", msg), kind="window"))
             return
         owner = self.job_owner
         if kind == "state" and self.job:
@@ -713,6 +717,8 @@ class GlassApp(QMainWindow):
             self.last_log_dir = payload
         elif kind == "done":
             ok, reason = payload
+            if self.job is not None:
+                alerts.notify(self.settings, alerts.run_event(self.job, ok, reason))
             if getattr(self, "_hid", False):
                 self._hid = False
                 self.showNormal()
