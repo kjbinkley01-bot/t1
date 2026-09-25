@@ -337,6 +337,12 @@ class GlassApp(QMainWindow):
 
         self.hotkeys.start()
         self.update_tray()
+        from .. import schedule as sch
+        self._window_watch = sch.WindowWatch()
+        self._sched_timer = QTimer(self)
+        self._sched_timer.setInterval(10_000)
+        self._sched_timer.timeout.connect(self.check_schedule)
+        self._sched_timer.start()
         self.sampler = CursorSampler(self.post)
         self.sampler.start()
         self._poll_timer = QTimer(self)
@@ -964,8 +970,44 @@ class GlassApp(QMainWindow):
         self.history_tab.reload()
         self.import_tab._refresh_recent()
 
+    def open_schedule(self):
+        from .scheduledlg import ScheduleDialog
+        ScheduleDialog(self).exec()
+
+    def check_schedule(self):
+        """Start scheduled scripts that are due (every 10 s)."""
+        import time as _time
+
+        from .. import schedule as sch
+        from .. import target as tgt
+        changed = False
+        for e in self.settings.get("schedule") or []:
+            if not e.get("enabled") or sch.check(e):
+                continue
+            if e["kind"] == "window":
+                try:
+                    is_open = bool(tgt.find_window(e.get("window_title", ""), e.get("window_process", "")))
+                except tgt.WindowNotFound:
+                    continue
+                fire = self._window_watch.appeared(e, is_open)
+            else:
+                fire = sch.due(e)
+            if not fire:
+                continue
+            e["last_run"] = _time.time()
+            changed = True
+            name = os.path.splitext(os.path.basename(e["path"]))[0]
+            if self.job_running():
+                self.set_status(f"Skipped scheduled {name}: something else is running", error=True)
+                self.tray.message("Clicker", f"Skipped scheduled {name}: something else is running")
+                continue
+            self.run_script_hotkey(e["path"], from_menu=True)
+        if changed:
+            self.save_settings()
+
     def update_tray(self):
-        if self.settings.get("tray_on_close") or scripthotkeys.bindings(self.settings):
+        if (self.settings.get("tray_on_close") or scripthotkeys.bindings(self.settings)
+                or any(e.get("enabled") for e in self.settings.get("schedule") or [])):
             self.tray.ensure()
         else:
             self.tray.hide()
@@ -1149,6 +1191,7 @@ class GlassApp(QMainWindow):
         self._closed = True
         self._poll_timer.stop()
         self._autosave_timer.stop()
+        self._sched_timer.stop()
         self.stop_job()
         self.triggers.stop()
         self.hotkeys.stop()

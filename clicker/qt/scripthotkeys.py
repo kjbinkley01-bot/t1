@@ -259,6 +259,7 @@ class Tray:
             m.addSeparator()
         m.addAction("Open Clicker", main.show_from_tray)
         m.addAction("Script hotkeys...", lambda: (main.show_from_tray(), main.open_script_hotkeys()))
+        m.addAction("Schedule...", lambda: (main.show_from_tray(), main.open_schedule()))
         m.addSeparator()
         m.addAction("Quit", main.quit_from_tray)
 
