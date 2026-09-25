@@ -9,7 +9,7 @@ import threading
 import traceback
 import webbrowser
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QRegion
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
@@ -111,7 +111,7 @@ class PageTransition(QWidget):
     background, so each frame is the wallpaper plus two image copies.
     """
 
-    DURATION = 300
+    DURATION = glass.SLOW  # the same time and curve as the tab bar's lens, so both arrive together
     SHIFT = 56
 
     def __init__(self, parent, rect, main, old_pm, direction):
@@ -128,8 +128,7 @@ class PageTransition(QWidget):
 
     def start(self, new_pm):
         self.new_pm = new_pm
-        glass.animate(self, 0.0, 1.0, self.DURATION, self._step, curve=QEasingCurve.Type.OutQuart,
-                      done=self.finish, attr="_anim")
+        glass.animate(self, 0.0, 1.0, self.DURATION, self._step, done=self.finish, attr="_anim")
 
     def _step(self, v):
         self.t = float(v)

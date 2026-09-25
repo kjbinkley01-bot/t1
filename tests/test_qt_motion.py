@@ -74,3 +74,28 @@ def test_trackpad_and_reduced_motion_are_left_to_qt(qapp):
         assert not hasattr(bar, "_clicker_glide")
     finally:
         glass.set_motion(True)
+
+
+def test_button_style_changes_cross_fade(qapp):
+    from clicker.qt.widgets import GlassButton
+    glass.set_motion(True)
+    b = GlassButton("Start", icon="play", kind="primary")
+    b.show()
+    b.set_kind("record")
+    qapp.processEvents()
+    assert b._old_kind == "primary" and b._blend < 1.0   # both styles show, blending
+    b.grab()                                               # and it paints mid blend
+    pump(qapp, glass.BASE + 150)
+    assert b._old_kind is None and b._blend == 1.0
+
+
+def test_disabling_a_button_dims_it_gradually(qapp):
+    from clicker.qt.widgets import GlassButton
+    b = GlassButton("Stop")
+    b.show()
+    qapp.processEvents()
+    b.setEnabled(False)
+    qapp.processEvents()
+    assert 0.55 < b._dim <= 1.0
+    pump(qapp, glass.FAST + 150)
+    assert b._dim == pytest.approx(0.55)

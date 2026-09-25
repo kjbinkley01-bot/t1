@@ -28,6 +28,8 @@ class GlassButton(QAbstractButton):
         self.small = small
         self._hover = 0.0
         self._press = 0.0
+        self._old_kind, self._blend = None, 1.0   # cross-fade from the previous style
+        self._dim = 1.0                            # 1 enabled, 0.55 disabled, animated between
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFont(font(9.5 if small else 10.5, QFont.Weight.DemiBold if kind in ("primary", "record", "on")
                           else QFont.Weight.Medium))
@@ -38,8 +40,26 @@ class GlassButton(QAbstractButton):
 
     def set_kind(self, kind):
         if kind != self.kind:
-            self.kind = kind
-            self.update()
+            self._old_kind, self.kind, self._blend = self.kind, kind, 0.0
+            animate(self, 0.0, 1.0, glass.BASE, self._set_blend, attr="_kanim",
+                    done=lambda: setattr(self, "_old_kind", None))
+
+    def _set_blend(self, v):
+        self._blend = float(v)
+        self.update()
+
+    def changeEvent(self, e):
+        if e.type() == e.Type.EnabledChange:
+            target = 1.0 if self.isEnabled() else 0.55
+            if self.isVisible():
+                animate(self, self._dim, target, glass.FAST, self._set_dim, attr="_danim")
+            else:
+                self._dim = target
+        super().changeEvent(e)
+
+    def _set_dim(self, v):
+        self._dim = float(v)
+        self.update()
 
     def sizeHint(self):
         fm = QFontMetrics(self.font())
@@ -78,25 +98,26 @@ class GlassButton(QAbstractButton):
         self._press = float(v)
         self.update()
 
-    def _colors(self, m):
+    def _colors(self, m, kind=None):
         on = self.isEnabled()
-        if self.kind == "primary":
+        kind = kind or self.kind
+        if kind == "primary":
             fill = QColor(ACCENT).lighter(100 + int(12 * self._hover))
             return fill, QColor("#ffffff"), False
-        if self.kind == "record":
+        if kind == "record":
             return QColor(RED).lighter(100 + int(10 * self._hover)), QColor("#ffffff"), False
-        if self.kind == "on":
+        if kind == "on":
             return QColor(255, 255, 255, 235 + int(20 * self._hover)), QColor("#000000"), False
-        fg = QColor(RED) if self.kind == "danger" else QColor(m.text)
+        fg = QColor(RED) if kind == "danger" else QColor(m.text)
         if not on:
             fg = QColor(m.faint)
         return None, fg, True
 
-    def _capsule(self, m, w, h):
+    def _capsule(self, m, w, h, kind):
         """The button's glass capsule as a cached pixmap (hover is quantized to 16 steps)."""
         hq = round(self._hover * 16) / 16
         dpr = self.devicePixelRatioF()
-        key = (int(w), int(h), self.kind, hq, self.isEnabled(), id(m), dpr)
+        key = (int(w), int(h), kind, hq, self.isEnabled(), id(m), dpr)
         pm = _CAPSULES.get(key)
         if pm is not None:
             return pm
@@ -107,7 +128,7 @@ class GlassButton(QAbstractButton):
         radius = h / 2
         saved = self._hover
         self._hover = hq
-        fill, _fg, is_glass = self._colors(m)
+        fill, _fg, is_glass = self._colors(m, kind)
         self._hover = saved
         if is_glass:
             well, hov = QColor(m.well), QColor(m.well_hover)
@@ -131,19 +152,27 @@ class GlassButton(QAbstractButton):
         m = mode_of(self)
         p = QPainter(self)
         base = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        if not self.isEnabled():
-            p.setOpacity(0.55)
-        pm = self._capsule(m, base.width(), base.height())
         # pressed controls shrink a little, like the kit's springy tiles
         k = 1 - 0.045 * self._press
         r = QRectF(base.center().x() - base.width() * k / 2, base.center().y() - base.height() * k / 2,
                    base.width() * k, base.height() * k)
         if k < 0.999:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            p.drawPixmap(r, pm, QRectF(pm.rect()))
-        else:
-            p.drawPixmap(base.topLeft(), pm)
-        _fill, fg, _g = self._colors(m)
+        layers = [(self.kind, 1.0)]
+        if self._old_kind is not None and self._blend < 1.0:
+            layers = [(self._old_kind, 1.0 - self._blend), (self.kind, self._blend)]
+        for kind, alpha in layers:
+            p.setOpacity(self._dim * alpha)
+            pm = self._capsule(m, base.width(), base.height(), kind)
+            if k < 0.999:
+                p.drawPixmap(r, pm, QRectF(pm.rect()))
+            else:
+                p.drawPixmap(base.topLeft(), pm)
+            self._paint_content(p, m, r, kind)
+        p.end()
+
+    def _paint_content(self, p, m, r, kind):
+        _fill, fg, _g = self._colors(m, kind)
         isz = 14 if self.small else 17
         text = self.text()
         fm = QFontMetrics(self.font())
@@ -160,7 +189,6 @@ class GlassButton(QAbstractButton):
             p.setFont(self.font())
             p.drawText(QRectF(x, r.y(), tw + 2, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        text)
-        p.end()
 
 
 _CAPSULES = {}

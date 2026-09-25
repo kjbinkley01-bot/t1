@@ -1115,6 +1115,7 @@ class ActionTab(QWidget):
             self.chart.setVisible(on)
             if not on:
                 self._fit_window()
+        step(start)  # the first frame already shows the starting width
         glass.animate(self, start, end, glass.BASE, step, curve=glass.GLIDE, attr="_chart_anim", done=finish)
 
     def move_steps_to(self, indexes, target):
