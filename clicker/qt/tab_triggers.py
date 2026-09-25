@@ -2,7 +2,6 @@
 
 import copy
 import datetime
-import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
@@ -682,15 +681,9 @@ class TriggersTab(QWidget):
             if name is None:
                 return
             name = self.main.trigger_assets.add_image(img, name or "trigger")
-            cur = self.cb_image.currentText()
-            self.cb_image.clear()
-            self.cb_image.addItems(self.main.trigger_assets.names())
-            if into is not None:
-                self.cb_image.setCurrentText(cur)
-                into.setCurrentText(name)
+            if self._show_new_image(name, into):
                 self._msg("Added. The rule now also looks for this image.")
                 return
-            self.cb_image.setCurrentText(name)
             if not self.e_region.text().strip():
                 pad = 150
                 x, y, w, h = region
@@ -699,24 +692,22 @@ class TriggersTab(QWidget):
         dialogs.select_region(self.main, done, "Drag around the image this rule should look for. Esc cancels.")
 
     def load_image(self, into=None):
-        path, _ = QFileDialog.getOpenFileName(self, "Load image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
-        if not path:
-            return
-        try:
-            with open(path, "rb") as f:
-                img = vision.decode_png(f.read())
-        except (OSError, ValueError) as e:
-            QMessageBox.warning(self, "Could not load image", str(e))
-            return
-        name = self.main.trigger_assets.add_image(img, os.path.splitext(os.path.basename(path))[0])
+        picked = dialogs.open_image(self)
+        if picked is not None:
+            self._show_new_image(self.main.trigger_assets.add_image(*picked), into)
+
+    def _show_new_image(self, name, into):
+        """Refill the image list and select the new image, in `into` (an extra image) or the main one.
+        Returns True when it went into `into`."""
         cur = self.cb_image.currentText()
         self.cb_image.clear()
         self.cb_image.addItems(self.main.trigger_assets.names())
         if into is not None:
             self.cb_image.setCurrentText(cur)
             into.setCurrentText(name)
-            return
+            return True
         self.cb_image.setCurrentText(name)
+        return False
 
     def draw_region(self):
         def done(region, _img):

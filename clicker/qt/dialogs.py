@@ -1,9 +1,11 @@
 """Glass dialogs and overlays: region picker, prompts, script inputs, settings."""
 
+import os
+
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
-from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QMessageBox, QVBoxLayout, QWidget)
 
 from .. import model, runlog, vision
 from . import glass
@@ -197,6 +199,19 @@ class RegionPicker(QWidget):
         x, y, w, h = region
         crop = self.frame[y - self.oy:y - self.oy + h, x - self.ox:x - self.ox + w].copy()
         self.done_cb(region, crop)
+
+
+def open_image(parent):
+    """Ask for an image file. Returns (BGR image, file name without extension), or None."""
+    path, _ = QFileDialog.getOpenFileName(parent, "Load image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as f:
+            return vision.decode_png(f.read()), os.path.splitext(os.path.basename(path))[0]
+    except (OSError, ValueError) as e:
+        QMessageBox.warning(parent, "Could not load image", str(e))
+        return None
 
 
 def select_region(main, done, prompt="Drag to select an area. Esc cancels."):

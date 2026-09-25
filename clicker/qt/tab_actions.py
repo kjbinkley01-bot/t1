@@ -1274,16 +1274,10 @@ class ActionTab(QWidget):
         dialogs.select_region(self.main, done, "Drag around the image to capture. Esc cancels.")
 
     def load_image(self, combo):
-        path, _ = QFileDialog.getOpenFileName(self, "Load image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
-        if not path:
+        picked = dialogs.open_image(self)
+        if picked is None:
             return
-        try:
-            with open(path, "rb") as f:
-                img = vision.decode_png(f.read())
-        except (OSError, ValueError) as e:
-            QMessageBox.warning(self, "Could not load image", str(e))
-            return
-        name = self.assets.add_image(img, os.path.splitext(os.path.basename(path))[0])
+        name = self.assets.add_image(*picked)
         self._refresh_image_lists()
         combo.setCurrentText(name)
         self.dirty = True
@@ -1531,10 +1525,7 @@ class ActionTab(QWidget):
         if self.main.job_running():
             self.main.set_status("Something else is running.", error=True)
             return
-        self.sync_settings()
-        problems = [m for lvl, m in storage.validate(self.script, self.assets) if lvl == "error"]
-        if problems:
-            QMessageBox.warning(self, "Script has problems", "\n".join(problems))
+        if not self._ready_to_run():
             return
         job = self._runner(self.script, 0.5)
         if job:
@@ -1542,6 +1533,14 @@ class ActionTab(QWidget):
             job.run_to = run_to
             if self.main.start_job(job, self):
                 self.vars_panel.refresh(show=True)
+
+    def _ready_to_run(self):
+        """Save the settings into the script and refuse to run it if it has errors."""
+        self.sync_settings()
+        problems = [m for lvl, m in storage.validate(self.script, self.assets) if lvl == "error"]
+        if problems:
+            QMessageBox.warning(self, "Script has problems", "\n".join(problems))
+        return not problems
 
     def debug_continue(self):
         job = self._my_job()
@@ -1564,10 +1563,7 @@ class ActionTab(QWidget):
         if not self.script["steps"]:
             self.main.set_status("Add some steps first.", error=True)
             return
-        self.sync_settings()
-        problems = [m for lvl, m in storage.validate(self.script, self.assets) if lvl == "error"]
-        if problems:
-            QMessageBox.warning(self, "Script has problems", "\n".join(problems))
+        if not self._ready_to_run():
             return
         job = self._runner(self.script, 0 if from_hotkey else 2)
         if job:

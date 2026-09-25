@@ -10,13 +10,13 @@ import traceback
 import webbrowser
 
 from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPixmap, QRegion
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QRegion
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import alerts, clipboard, model, storage, updates, vision
 from . import scripthotkeys
-from ..core import CursorSampler, Ctx, coalesce
+from ..core import PROGRESS_ONLY, CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
 from ..triggers import TriggerEngine
 from . import glass
@@ -91,9 +91,7 @@ def swatch_pixmap(hexc, dpr):
     """A small round color chip (cached; restyling a label with a style sheet 8 times a second is slow)."""
     pm = _swatches.get((hexc, dpr))
     if pm is None:
-        pm = QPixmap(int(12 * dpr), int(12 * dpr))
-        pm.setDevicePixelRatio(dpr)
-        pm.fill(Qt.GlobalColor.transparent)
+        pm = glass.clear_pixmap(12, 12, dpr)
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(QColor(255, 255, 255, 110))
@@ -167,9 +165,7 @@ class PageTransition(QWidget):
 def page_snapshot(area):
     """The page's contents on a transparent background (no wallpaper), for sliding transitions."""
     dpr = area.devicePixelRatioF()
-    pm = QPixmap(max(1, int(area.width() * dpr)), max(1, int(area.height() * dpr)))
-    pm.setDevicePixelRatio(dpr)
-    pm.fill(Qt.GlobalColor.transparent)
+    pm = glass.clear_pixmap(area.width(), area.height(), dpr)
     area.render(pm, QPoint(0, 0), QRegion(area.rect()), QWidget.RenderFlag.DrawChildren)
     return pm
 
@@ -685,11 +681,7 @@ class GlassApp(QMainWindow):
         paused = running and self.job.paused
         for t in self.tabs.values():
             t.update_state(running and self.job_owner is t, running, paused)
-        if running:
-            state = "Paused" if paused else getattr(self.job, "status", "Running")
-        else:
-            state = "Ready"
-        self.lbl_state.setText(state)
+        self._refresh_state_text()
         n_runs = len(self.all_runs())
         self.btn_runs.setVisible(n_runs > 0)
         self.btn_runs.setText(f"{n_runs} running")
@@ -699,6 +691,12 @@ class GlassApp(QMainWindow):
         n = sum(1 for r in self.rules if r.get("enabled"))
         self.lbl_trig.setText(f"Monitoring {n} rule{'s' if n != 1 else ''}" if self.triggers.running
                               else "Monitoring off")
+
+    def _refresh_state_text(self):
+        running = self.job_running()
+        state = ("Paused" if self.job.paused else getattr(self.job, "status", "Running")) if running else "Ready"
+        if self.lbl_state.text() != state:
+            self.lbl_state.setText(state)
 
     def _poll(self):
         batch = []
@@ -714,9 +712,13 @@ class GlassApp(QMainWindow):
                 self._report_error(*sys.exc_info())
         sig = (self.job_running(), self.job.paused if self.job else None, self.triggers.running,
                tuple((id(j), j.paused) for j, _m in self.all_runs()))
-        if batch or sig != getattr(self, "_sig", None):
+        # progress events arrive ~30 times a second while a script runs; relaying out every toolbar for
+        # each one made the window stutter, so only real changes refresh the buttons and status bar
+        if sig != getattr(self, "_sig", None) or any((src, kind) not in PROGRESS_ONLY for src, kind, _p in batch):
             self._sig = sig
             self.refresh_states()
+        elif batch:
+            self._refresh_state_text()
 
     def _dispatch(self, source, kind, payload):
         if source == "hotkey":

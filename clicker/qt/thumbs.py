@@ -1,7 +1,7 @@
 """Image template thumbnails: in the step list and the "Or these" strip of image steps."""
 
 from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath
 from PySide6.QtWidgets import QHBoxLayout, QMenu, QWidget
 
 from .. import model
@@ -27,9 +27,7 @@ def thumb(assets, name, w, h, dpr=1.0):
     small = cv2.resize(img, (max(1, int(iw * k)), max(1, int(ih * k))),
                        interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_NEAREST)
     src = glass.np_to_pixmap(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
-    out = QPixmap(int(w * dpr), int(h * dpr))
-    out.setDevicePixelRatio(dpr)
-    out.fill(Qt.GlobalColor.transparent)
+    out = glass.clear_pixmap(w, h, dpr)
     p = QPainter(out)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -58,9 +56,7 @@ def step_icon(assets, step, w=34, h=20, dpr=1.0):
     first = thumb(assets, names[0], w - (6 if len(names) > 1 else 0), h - (4 if len(names) > 1 else 0), dpr)
     if first is None:
         return QIcon()
-    out = QPixmap(int(w * dpr), int(h * dpr))
-    out.setDevicePixelRatio(dpr)
-    out.fill(Qt.GlobalColor.transparent)
+    out = glass.clear_pixmap(w, h, dpr)
     p = QPainter(out)
     if len(names) > 1:
         second = thumb(assets, names[1], w - 6, h - 4, dpr)

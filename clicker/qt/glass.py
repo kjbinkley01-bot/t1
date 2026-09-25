@@ -259,8 +259,8 @@ class Backdrop(QObject):
             size.height() > self.base_sharp.height()
         if need:
             self._render()
-        if self.fit_sharp is None:
-            self._refit()
+        if self.fit_sharp is None and not self._timer.isActive():
+            self._refit()  # first size: fit right away
         else:
             self.fit_sharp = self.fit_frost = None   # sample the base images until the size settles
             self.generation += 1
@@ -435,6 +435,14 @@ def set_motion(on):
     _motion["on"] = bool(on)
 
 
+def clear_pixmap(w, h, dpr=1.0):
+    """A transparent pixmap of w x h logical pixels, sharp on high DPI screens."""
+    pm = QPixmap(max(1, int(round(w * dpr))), max(1, int(round(h * dpr))))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.GlobalColor.transparent)
+    return pm
+
+
 class SurfaceCache:
     """Remembers one rendered surface and redraws it only when its key changes.
 
@@ -449,9 +457,7 @@ class SurfaceCache:
 
     def get(self, key, w, h, dpr, draw):
         if key != self.key or self.pm is None:
-            pm = QPixmap(max(1, int(round(w * dpr))), max(1, int(round(h * dpr))))
-            pm.setDevicePixelRatio(dpr)
-            pm.fill(Qt.GlobalColor.transparent)
+            pm = clear_pixmap(w, h, dpr)
             p = QPainter(pm)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             draw(p)

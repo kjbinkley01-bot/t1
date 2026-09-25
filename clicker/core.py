@@ -1,4 +1,4 @@
-"""Pieces shared by the Classic (Tk) and Liquid Glass (Qt) windows that don't touch widgets."""
+"""Window plumbing that doesn't touch widgets: the trigger bridge, cursor sampling, event coalescing."""
 
 import threading
 
@@ -88,6 +88,10 @@ class CursorSampler:
 # events where only the newest one matters; older ones are dropped when the queue backs up
 COALESCE = {("script", "step"), ("script", "log"), ("script", "state"), ("script", "run"), ("script", "progress"),
             ("script", "highlight"), ("app", "cursor"), ("trigger", "highlight")}
+
+
+# frequent progress events that never change which buttons are enabled or what the status bar says
+PROGRESS_ONLY = COALESCE - {("script", "state")}
 
 
 def coalesce(batch):

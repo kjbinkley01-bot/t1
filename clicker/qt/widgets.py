@@ -1,7 +1,7 @@
 """Glass controls: buttons, segmented tabs, switches, fields and the step table styling."""
 
 from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QHBoxLayout, QLabel, QSizePolicy,
                                QWidget)
 
@@ -100,9 +100,7 @@ class GlassButton(QAbstractButton):
         pm = _CAPSULES.get(key)
         if pm is not None:
             return pm
-        pm = QPixmap(max(1, int(w * dpr)), max(1, int(h * dpr)))
-        pm.setDevicePixelRatio(dpr)
-        pm.fill(Qt.GlobalColor.transparent)
+        pm = glass.clear_pixmap(w, h, dpr)
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(0, 0, w, h)
@@ -289,9 +287,7 @@ def _make_lens(m, w, h, dpr):
     key = (w, h, id(m), dpr)
     pm = _LENSES.get(key)
     if pm is None:
-        pm = QPixmap(max(1, int(w * dpr)), max(1, int(h * dpr)))
-        pm.setDevicePixelRatio(dpr)
-        pm.fill(Qt.GlobalColor.transparent)
+        pm = glass.clear_pixmap(w, h, dpr)
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         paint_glass(p, QRectF(0, 0, w, h), h / 2, None, QPoint(0, 0), m, light=0.9, shadow=False,
