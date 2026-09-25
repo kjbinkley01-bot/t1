@@ -28,6 +28,13 @@ TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"), ("triggers
 AUTOSAVE_MS = 60_000
 
 
+def _quiet(fn, *a):
+    try:
+        fn(*a)
+    except Exception:
+        pass
+
+
 class QtClipboard:
     """Clipboard access for script steps: done on the interface thread, which Qt requires."""
 
@@ -343,6 +350,9 @@ class GlassApp(QMainWindow):
         self._sched_timer.setInterval(10_000)
         self._sched_timer.timeout.connect(self.check_schedule)
         self._sched_timer.start()
+        self.remote_listener = None
+        self.remote_state = "off"
+        self.apply_remote()
         self.sampler = CursorSampler(self.post)
         self.sampler.start()
         self._poll_timer = QTimer(self)
@@ -718,6 +728,10 @@ class GlassApp(QMainWindow):
                 self.stop_all()
             elif kind == "run_script":
                 self._run_script_from_trigger(payload)
+            elif kind == "remote":
+                self.handle_remote(payload)
+            elif kind == "remote_state":
+                self.remote_state = payload
             elif kind == "clip":
                 op, text, box, done = payload
                 try:
@@ -970,6 +984,97 @@ class GlassApp(QMainWindow):
         self.history_tab.reload()
         self.import_tab._refresh_recent()
 
+    # ------------------------------------------------------------ phone remote control
+
+    def open_remote(self):
+        from .remote_dialog import RemoteDialog
+        RemoteDialog(self).exec()
+
+    def apply_remote(self):
+        from .. import remote
+        if self.remote_listener is not None:
+            self.remote_listener.stop()
+            self.remote_listener = None
+        cfg = self.settings.get("remote") or {}
+        if cfg.get("enabled") and cfg.get("topic"):
+            self.remote_listener = remote.Listener(
+                cfg["topic"], lambda text: self.post("app", "remote", text),
+                lambda st: self.post("app", "remote_state", st)).start()
+            self.remote_state = "connecting"
+        else:
+            self.remote_state = "off"
+        self.update_tray()
+
+    def remote_reply(self, title, text, image=None, topic=None):
+        from .. import remote
+        topic = topic or (self.settings.get("remote") or {}).get("topic")
+        if topic:
+            threading.Thread(target=lambda: _quiet(remote.reply, topic, title, text, image), daemon=True).start()
+
+    def handle_remote(self, text):
+        """A command from the phone (runs on the window thread)."""
+        from .. import history, remote
+        cfg = self.settings.get("remote") or {}
+        cmd, arg = remote.parse(text, cfg.get("pin", ""))
+        if cmd is None:
+            if arg != "wrong or missing PIN":  # stay quiet to strangers
+                self.remote_reply("Clicker", arg)
+            return
+        allowed = [p for p in cfg.get("allowed") or [] if os.path.exists(p)]
+        job = self.job if self.job_running() else None
+        if cmd == "help":
+            self.remote_reply("Clicker", remote.help_text())
+        elif cmd == "list":
+            names = [os.path.splitext(os.path.basename(p))[0] for p in allowed]
+            self.remote_reply("Clicker", ("You can start: " + ", ".join(names)) if names else
+                              "No scripts are allowed yet (Settings > Phone remote control).")
+        elif cmd == "status":
+            if job is None:
+                last = history.load()[-1:] if history.load() else []
+                extra = (f" Last run: {last[0].get('script')} {last[0]['result']}, "
+                         f"{history.fmt_duration(last[0].get('seconds'))}.") if last else ""
+                self.remote_reply("Clicker", "Idle." + extra)
+            else:
+                self.remote_reply("Clicker", self._job_summary(job))
+        elif cmd == "start":
+            path, err = remote.match_script(arg, allowed)
+            if err:
+                self.remote_reply("Clicker", err)
+            elif job is not None:
+                self.remote_reply("Clicker", "Busy: " + self._job_summary(job) + " Send stop first.")
+            else:
+                self.run_script_hotkey(path, from_menu=True)
+                name = os.path.splitext(os.path.basename(path))[0]
+                self.remote_reply("Clicker", f"Started {name}." if self.job_running() else f"Could not start {name}.")
+        elif cmd == "stop":
+            self.stop_all()
+            self.remote_reply("Clicker", "Stopped." if job else "Nothing was running.")
+        elif cmd in ("pause", "resume"):
+            if job is None:
+                self.remote_reply("Clicker", "Nothing is running.")
+            else:
+                if job.paused != (cmd == "pause"):
+                    self.toggle_pause()
+                self.remote_reply("Clicker", "Paused." if cmd == "pause" else "Resumed.")
+        elif cmd == "screenshot":
+            try:
+                img, _o = vision.capture(None)
+                self.remote_reply("Clicker screenshot", self._job_summary(job) if job else "Idle.",
+                                  vision.encode_png(img))
+            except Exception as e:
+                self.remote_reply("Clicker", f"Could not take a screenshot: {e}")
+        self.set_status(f"Phone: {text.strip()[:40]}")
+
+    def _job_summary(self, job):
+        script = getattr(job, "script", None)
+        name = script.get("name") if isinstance(script, dict) else getattr(job, "label", "a recording")
+        cur = getattr(job, "current", None)
+        where = f", step {cur + 1} of {len(script['steps'])}" if isinstance(script, dict) and cur is not None else ""
+        started = getattr(job, "started_at", None)
+        import time as _t
+        ran = f", running {int((_t.time() - started) // 60)} min" if started else ""
+        return f"{'Paused' if job.paused else 'Running'} {name}{where}{ran}."
+
     def open_schedule(self):
         from .scheduledlg import ScheduleDialog
         ScheduleDialog(self).exec()
@@ -1007,7 +1112,8 @@ class GlassApp(QMainWindow):
 
     def update_tray(self):
         if (self.settings.get("tray_on_close") or scripthotkeys.bindings(self.settings)
-                or any(e.get("enabled") for e in self.settings.get("schedule") or [])):
+                or any(e.get("enabled") for e in self.settings.get("schedule") or [])
+                or (self.settings.get("remote") or {}).get("enabled")):
             self.tray.ensure()
         else:
             self.tray.hide()
@@ -1192,6 +1298,8 @@ class GlassApp(QMainWindow):
         self._poll_timer.stop()
         self._autosave_timer.stop()
         self._sched_timer.stop()
+        if self.remote_listener is not None:
+            self.remote_listener.stop()
         self.stop_job()
         self.triggers.stop()
         self.hotkeys.stop()
