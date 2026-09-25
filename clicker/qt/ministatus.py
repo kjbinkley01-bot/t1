@@ -57,7 +57,8 @@ class MiniStatus(QWidget):
         self.lbl_time.setStyleSheet("color: rgba(255,255,255,170);")
         top.addWidget(self.lbl_time)
         self.btn_pause = GlassButton("", icon="pause", small=True, tip="Pause / resume")
-        self.btn_pause.clicked.connect(main.toggle_pause)
+        self.btn_pause.clicked.connect(lambda: (self.main.all_runs()[0][0].toggle_pause()
+                                                if self.main.all_runs() else None))
         self.btn_stop = GlassButton("", icon="stop", small=True, kind="record", tip="Stop")
         self.btn_stop.clicked.connect(main.stop_all)
         self.btn_open = GlassButton("", icon="arrow-up", small=True, tip="Open Clicker")
@@ -80,7 +81,7 @@ class MiniStatus(QWidget):
 
     def wanted(self):
         mode = self.main.settings.get("mini_status", "hidden")
-        if mode == "never" or not self.main.job_running():
+        if mode == "never" or not self.main.all_runs():
             return False
         if mode == "always":
             return True
@@ -97,7 +98,7 @@ class MiniStatus(QWidget):
         elif self.isVisible():
             self.hide()
             self.timer.stop()
-        if not self.main.job_running():
+        if not self.main.all_runs():
             self._started = None
 
     def _place(self):
@@ -111,9 +112,10 @@ class MiniStatus(QWidget):
     # ------------------------------------------------------------ content
 
     def tick(self):
-        job = self.main.job
-        if job is None:
+        runs = self.main.all_runs()
+        if not runs:
             return
+        job = runs[0][0]
         script = getattr(job, "script", None)
         name = script.get("name") if isinstance(script, dict) else None
         self.lbl_name.setText(name or getattr(job, "label", "Playback"))
@@ -133,6 +135,8 @@ class MiniStatus(QWidget):
                 text += f" · pass {job.run_number}" + (f"/{job.repeat}" if job.repeat else "")
         if paused:
             text = "Paused · " + text
+        if len(runs) > 1:
+            text += f"   (+{len(runs) - 1} more running)"
         self.lbl_step.setText(text)
         tab = self.main.action_tab
         frac = None

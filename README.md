@@ -19,6 +19,39 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.9
+**New steps**
+* **Wait for Text / If Text on Screen:** read a region (as text or a number) and compare it: *contains
+  Complete*, *number < 30*. Save text to keeps what was read.
+* **Windows:** Wait for Window, If Window Open, Focus Window, Move Window (draw where it goes), Close Window.
+* **Open** an app, file, folder or web address, optionally waiting for its window.
+* **Set Clipboard**, **Copy Clipboard to Variable**, and **Save Screenshot** (to a folder or file; the path is
+  in `{last_screenshot}`).
+* **For Each Row … Next Row:** loop over a CSV or Excel (.xlsx) file. The header row names the variables
+  (`Email Address` becomes `{email_address}`), plus `{row}` and `{row_count}`. From row / Max rows limit it.
+
+**Building and fixing scripts**
+* **Debugger:** F9 (or right-click) sets a breakpoint (red dot). Right-click a step to Run from it or Run to it.
+  When paused, the bar says where and why; F10 steps one line, F5 continues. The Variables panel shows every
+  variable live.
+* **Snippets** (side buttons): save selected steps with their images and insert them into any script.
+* **Smart waits:** Convert to Action Script can make picture clicks wait for their picture instead of the
+  recorded pause.
+* **Screen Triggers** rules take extra images too (any or all of them).
+
+**Running**
+* **Run several scripts at once:** a script started from a hotkey, the tray, the schedule, your phone or the
+  status bar's *N running* panel runs alongside the current one when at most one of them uses the real mouse
+  and keyboard (the others must Run in a window, background). Each has its own Pause and Stop.
+* **Mini status window:** a small always-on-top pill with the step, a progress bar, time, Pause and Stop while
+  the main window is hidden (Settings: hidden / always / never).
+* **Schedule** (Settings or tray): every day at a time on chosen weekdays, every N minutes, once, or when a
+  window opens.
+* **Phone remote control** (Settings): send `status`, `list`, `start Mining loop`, `stop`, `pause`, `resume` or
+  `screenshot` from the free ntfy app to your own topic. Optional PIN, and only scripts you allow can start.
+* **Backup** (Settings): export settings, hotkeys, rules, snippets, history and your scripts as one file; import
+  it on another PC.
+
 ## What's new in 2.8
 * **Pictures at clicks** (Macro Recorder, on by default): at each mouse press Clicker saves the smallest
   picture around the cursor that shows only once on screen (plain backgrounds and repeated icons get none).

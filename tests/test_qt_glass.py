@@ -122,3 +122,16 @@ def test_script_hotkey_entries_and_bindings(qapp):
     assert [e["path"] for e in scripthotkeys.entries(s)] == ["/a.clk", "/b.clk"]
     assert scripthotkeys.entries(s)[0]["toggle"] is True
     assert scripthotkeys.bindings(s) == {"/a.clk": "Ctrl+Alt+1"}
+
+
+def test_only_one_run_may_use_the_real_mouse(qapp):
+    from types import SimpleNamespace
+
+    from clicker.qt import runs
+    screen_job = SimpleNamespace(target=None)
+    bg = SimpleNamespace(target={"title": "A", "method": "messages"})
+    quick = SimpleNamespace(target={"title": "B", "method": "quickswitch"})
+    assert runs.can_run_alongside(bg, [screen_job])
+    assert runs.can_run_alongside(bg, [bg, screen_job])
+    assert not runs.can_run_alongside(screen_job, [bg, screen_job])
+    assert not runs.can_run_alongside(quick, [screen_job])

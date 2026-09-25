@@ -329,6 +329,8 @@ class GlassApp(QMainWindow):
         self.hotkeys = HotkeyManager(lambda kind, payload: self.post("hotkey", kind, payload),
                                      self.settings["hotkeys"], scripthotkeys.bindings(self.settings))
         self.script_hotkey_dialog = None
+        self.side_jobs = {}   # scripts running alongside the main run: id -> {job, name}
+        self._side_seq = 0
         from .ministatus import MiniStatus
         self.mini = MiniStatus(self)
         clipboard.set_backend(QtClipboard(self))
@@ -460,7 +462,10 @@ class GlassApp(QMainWindow):
         for w in (self.lbl_cursor, self.swatch, self.lbl_pixel, scr):
             sl.addWidget(w)
         sl.addStretch(1)
-        for w in (self.lbl_msg, self.lbl_trig, self.lbl_state):
+        self.btn_runs = GlassButton("", icon="play", small=True, tip="Everything running now")
+        self.btn_runs.clicked.connect(self.open_runs)
+        self.btn_runs.hide()
+        for w in (self.lbl_msg, self.lbl_trig, self.btn_runs, self.lbl_state):
             sl.addWidget(w)
         outer.addWidget(self.status)
         self.tabbar.select("actions", animate_it=False)
@@ -663,6 +668,8 @@ class GlassApp(QMainWindow):
 
     def stop_all(self):
         self.stop_job()
+        for run in list(self.side_jobs.values()):
+            run["job"].stop()
         if self.recording_active():
             self.recorder_tab.stop_record(from_hotkey=True)
         if self.triggers.running:
@@ -680,6 +687,10 @@ class GlassApp(QMainWindow):
         else:
             state = "Ready"
         self.lbl_state.setText(state)
+        n_runs = len(self.all_runs())
+        self.btn_runs.setVisible(n_runs > 0)
+        self.btn_runs.setText(f"{n_runs} running")
+        self.btn_runs.updateGeometry()
         if hasattr(self, "mini"):
             self.mini.sync()
         n = sum(1 for r in self.rules if r.get("enabled"))
@@ -698,7 +709,8 @@ class GlassApp(QMainWindow):
                 self._dispatch(source, kind, payload)
             except Exception:
                 self._report_error(*sys.exc_info())
-        sig = (self.job_running(), self.job.paused if self.job else None, self.triggers.running)
+        sig = (self.job_running(), self.job.paused if self.job else None, self.triggers.running,
+               tuple((id(j), j.paused) for j, _m in self.all_runs()))
         if batch or sig != getattr(self, "_sig", None):
             self._sig = sig
             self.refresh_states()
@@ -749,6 +761,9 @@ class GlassApp(QMainWindow):
             return
         if kind == "highlight":
             self.highlight.flash(payload)
+            return
+        if source.startswith("side:"):
+            self._side_event(source, kind, payload)
             return
         if source == "trigger":
             if kind == "log":
@@ -930,17 +945,65 @@ class GlassApp(QMainWindow):
             dlg.msg.setText(text)
             dlg.refresh(select=path)
 
+    # ------------------------------------------------------------ runs alongside the main one
+
+    def all_runs(self):
+        """[(job, is_main_run)] for everything running now."""
+        out = [(self.job, True)] if self.job_running() else []
+        out += [(r["job"], False) for r in self.side_jobs.values() if r["job"].running]
+        return out
+
+    def start_side_job(self, job, name):
+        from .runs import can_run_alongside
+        if self.recording_active() or not can_run_alongside(job, [j for j, _m in self.all_runs()]):
+            return False
+        self._side_seq += 1
+        sid = f"side:{self._side_seq}"
+        job.emit = self.emitter(sid)
+        self.side_jobs[sid] = {"job": job, "name": name}
+        job.start()
+        self.refresh_states()
+        return True
+
+    def _side_event(self, sid, kind, payload):
+        run = self.side_jobs.get(sid)
+        if run is None:
+            return
+        name = run["name"]
+        if kind == "log":
+            self.set_status(f"{name}: {payload}")
+        elif kind == "done":
+            ok, reason = payload
+            alerts.notify(self.settings, alerts.run_event(run["job"], ok, reason))
+            self.side_jobs.pop(sid, None)
+            if ok:
+                self.set_status(f"{name} finished")
+            else:
+                self.set_status(f"{name}: {reason}", error=not reason.startswith("Stop"))
+                if not reason.startswith("Stop"):
+                    self.toast.show_msg(f"{name} stopped", reason, 9000, accent=glass.RED)
+            if self.current_tab == "history":
+                QTimer.singleShot(200, self.history_tab.reload)
+            self.refresh_states()
+
+    def open_runs(self):
+        from .runs import RunsPanel
+        if not hasattr(self, "_runs_panel"):
+            self._runs_panel = RunsPanel(self)
+        self._runs_panel.open_at(self.btn_runs)
+
     def run_script_hotkey(self, path, from_menu=False):
         entry = next((e for e in scripthotkeys.entries(self.settings) if e["path"] == path), None)
         name = scripthotkeys.script_name(path)
-        if self.job_running():
-            if getattr(self.job, "path", None) == path and (from_menu or not entry or entry.get("toggle", True)):
-                self.stop_job()
+        same = [j for j, _m in self.all_runs() if getattr(j, "path", None) == path]
+        if same:
+            if from_menu or not entry or entry.get("toggle", True):
+                for j in same:
+                    j.stop()
                 self.set_status(f"Stopped {name}")
                 self.tray.message("Clicker", f"Stopped {name}")
             else:
-                self.set_status("Something is already running. Stop it first.", error=True)
-                self.tray.message("Clicker", f"Can't start {name}: something is already running.")
+                self.set_status(f"{name} is already running.", error=True)
             return
         if not os.path.exists(path):
             self.set_status(f"{name}: the file is gone ({path})", error=True)
@@ -959,9 +1022,19 @@ class GlassApp(QMainWindow):
         job = Runner(script, assets, self.emitter("script"), inputs_map=values, speed=st.get("speed", 1.0),
                      repeat=st.get("repeat", 1), random_delay_ms=st.get("random_delay_ms", 0), label=name,
                      save_log=self.settings.get("save_run_logs", True), path=path)
-        if self.start_job(job, None):
-            self.set_status(f"Started {name}")
-            self.tray.message("Clicker", f"Started {name}")
+        if not (self.job_running() or self.recording_active()):
+            if self.start_job(job, None):
+                self.set_status(f"Started {name}")
+                self.tray.message("Clicker", f"Started {name}")
+            return
+        if self.start_side_job(job, name):
+            self.set_status(f"Started {name} alongside")
+            self.tray.message("Clicker", f"Started {name} alongside the running script")
+        else:
+            msg = (f"Can't start {name} now: it would share the real mouse and keyboard with a running script. "
+                   "Give one of them a Run in window (background) to run both.")
+            self.set_status(msg, error=True)
+            self.tray.message("Clicker", msg)
 
     def apply_imported(self, settings):
         """Use settings (and the rule file) from an imported backup without restarting."""
@@ -1029,7 +1102,10 @@ class GlassApp(QMainWindow):
             self.remote_reply("Clicker", ("You can start: " + ", ".join(names)) if names else
                               "No scripts are allowed yet (Settings > Phone remote control).")
         elif cmd == "status":
-            if job is None:
+            runs = self.all_runs()
+            if runs:
+                self.remote_reply("Clicker", "\n".join(self._job_summary(j) for j, _m in runs))
+            elif job is None:
                 last = history.load()[-1:] if history.load() else []
                 extra = (f" Last run: {last[0].get('script')} {last[0]['result']}, "
                          f"{history.fmt_duration(last[0].get('seconds'))}.") if last else ""
@@ -1040,15 +1116,19 @@ class GlassApp(QMainWindow):
             path, err = remote.match_script(arg, allowed)
             if err:
                 self.remote_reply("Clicker", err)
-            elif job is not None:
-                self.remote_reply("Clicker", "Busy: " + self._job_summary(job) + " Send stop first.")
             else:
-                self.run_script_hotkey(path, from_menu=True)
                 name = os.path.splitext(os.path.basename(path))[0]
-                self.remote_reply("Clicker", f"Started {name}." if self.job_running() else f"Could not start {name}.")
+                if any(getattr(j, "path", None) == path for j, _m in self.all_runs()):
+                    self.remote_reply("Clicker", f"{name} is already running.")
+                else:
+                    self.run_script_hotkey(path, from_menu=True)
+                    ok = any(getattr(j, "path", None) == path for j, _m in self.all_runs())
+                    self.remote_reply("Clicker", f"Started {name}." if ok else
+                                      f"Could not start {name}: it would share the mouse with a running script.")
         elif cmd == "stop":
+            had = bool(self.all_runs())
             self.stop_all()
-            self.remote_reply("Clicker", "Stopped." if job else "Nothing was running.")
+            self.remote_reply("Clicker", "Stopped." if had else "Nothing was running.")
         elif cmd in ("pause", "resume"):
             if job is None:
                 self.remote_reply("Clicker", "Nothing is running.")
@@ -1102,11 +1182,9 @@ class GlassApp(QMainWindow):
             e["last_run"] = _time.time()
             changed = True
             name = os.path.splitext(os.path.basename(e["path"]))[0]
-            if self.job_running():
-                self.set_status(f"Skipped scheduled {name}: something else is running", error=True)
-                self.tray.message("Clicker", f"Skipped scheduled {name}: something else is running")
-                continue
             self.run_script_hotkey(e["path"], from_menu=True)
+            if not any(getattr(j, "path", None) == e["path"] for j, _m in self.all_runs()):
+                self.set_status(f"Skipped scheduled {name}: couldn't start alongside what's running", error=True)
         if changed:
             self.save_settings()
 
