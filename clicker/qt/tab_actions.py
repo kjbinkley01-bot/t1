@@ -248,6 +248,9 @@ class ActionTab(QWidget):
         self.btn_flow.set_kind("on" if self.flow_on else "glass")
         self.rail.setVisible(self.flow_on)
         self.flow_panel.setVisible(self.flow_on)
+        chart_on = bool(self.main.settings.get("show_chart", False))
+        self.chart.setVisible(chart_on)
+        self.btn_chart.set_kind("on" if chart_on else "glass")
         self._shortcuts()
         self._on_action_change()
         self._on_wait_mode()
@@ -493,6 +496,11 @@ class ActionTab(QWidget):
         h.addStretch(1)
         self.lbl_count = detail_label("")
         h.addWidget(self.lbl_count)
+        self.btn_chart = GlassButton("Chart", icon="bounding-box", small=True,
+                                     tip="The script as boxes and arrows: drag to move steps, drag a handle to "
+                                         "set a jump")
+        self.btn_chart.clicked.connect(lambda: self.set_chart_visible(not self.chart.isVisible()))
+        h.addWidget(self.btn_chart)
         self.btn_flow = GlassButton("Flow", icon="repeat", small=True, tip="Show where loops and jumps lead")
         self.btn_flow.clicked.connect(lambda: self.set_flow_visible(not self.flow_on))
         h.addWidget(self.btn_flow)
@@ -552,8 +560,23 @@ class ActionTab(QWidget):
         self.vars_panel.hide()
         body = QHBoxLayout()
         body.setSpacing(0)
-        body.addWidget(self.rail)
-        body.addWidget(self.tree, 1)
+        from PySide6.QtWidgets import QSplitter
+        from .flowchart import FlowChart
+        left = QWidget()
+        ll = QHBoxLayout(left)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(0)
+        ll.addWidget(self.rail)
+        ll.addWidget(self.tree, 1)
+        self.chart = FlowChart(self)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(left)
+        self.splitter.addWidget(self.chart)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setStyleSheet("QSplitter::handle { background: transparent; width: 10px; }")
+        body.addWidget(self.splitter, 1)
         body.addSpacing(8)
         body.addWidget(self.flow_panel)
         body.addWidget(self.vars_panel)
@@ -1018,6 +1041,8 @@ class ActionTab(QWidget):
             s.activated.connect(not_typing(fn))
 
     def _on_select(self):
+        if self.chart.isVisible():
+            self.chart.set_selection(self._selection())
         i = self._selected()
         if i is not None and not self._drag.moved:
             self.step_to_form(self.script["steps"][i])
@@ -1056,6 +1081,42 @@ class ActionTab(QWidget):
         if hasattr(self.main, "update_min_width"):
             self.main.update_min_width()
 
+    def set_chart_visible(self, on):
+        self.chart.setVisible(bool(on))
+        self.btn_chart.set_kind("on" if on else "glass")
+        self.main.settings["show_chart"] = bool(on)
+        self.main.save_settings()
+        if on:
+            self.chart.rebuild()
+        if hasattr(self.main, "update_min_width"):
+            self.main.update_min_width()
+
+    def move_steps_to(self, indexes, target):
+        """Move steps (from the chart) so they start at target."""
+        if not self._editable():
+            self.chart.rebuild()
+            return
+        self._record()
+        new = editing.move_to(self.script, indexes, target)
+        if new == sorted(indexes):
+            self.history.discard_last()
+            self.chart.rebuild()
+            return
+        self.changed(new)
+        self.main.set_status(f"Moved step {indexes[0] + 1} to {new[0] + 1}")
+
+    def set_jump(self, src, dst):
+        """Make step src jump to step dst (drawn in the chart)."""
+        from .flowchart import JUMPABLE
+        st = self.script["steps"][src]
+        key = JUMPABLE.get(st["action"])
+        if key is None or not self._editable():
+            return
+        self._record()
+        st[key] = self.script["steps"][dst].get("label") or dst + 1
+        self.changed([src])
+        self.main.set_status(f"Step {src + 1} now goes to step {dst + 1}")
+
     def _refresh_flow(self):
         steps = self.script["steps"]
         edges = flow.edges(steps)
@@ -1064,6 +1125,8 @@ class ActionTab(QWidget):
         self._depth = model.block_structure(steps)[0]["depth"]
         self.rail.set_edges(edges)
         self.flow_panel.set_flow(steps, edges, dead)
+        if hasattr(self, "chart") and self.chart.isVisible():
+            self.chart.rebuild()
 
     def refresh_list(self, select=None):
         steps = self.script["steps"]
@@ -1117,6 +1180,8 @@ class ActionTab(QWidget):
                 self._paint_row(self.tree.topLevelItem(idx), texts, flag, idx == i)
         if i is not None and i < self.tree.topLevelItemCount():
             self.tree.scrollToItem(self.tree.topLevelItem(i))
+        if self.chart.isVisible():
+            self.chart.set_running(i)
 
     # ------------------------------------------------------------ background mode
 
