@@ -29,7 +29,7 @@ def edges(steps):
         if st.get("disabled"):
             continue
         a = st.get("action", "")
-        if a in model.WHILE_ACTIONS and i in pairs and pairs[i] > i:
+        if a in model.BLOCK_STARTS and i in pairs and pairs[i] > i:
             out.append({"src": i, "dst": pairs[i], "kind": "while", "text": _short_while(st)})
         if a.startswith("If "):
             t = _target(steps, st.get("goto"), labels)
@@ -77,6 +77,9 @@ def _short_while(st):
         return f"While pixel is {st.get('color')}"
     if a == "While Variable":
         return f"While {{{st.get('var')}}} {st.get('op', '=')} {st.get('value', '')}"
+    if a == "For Each Row":
+        name = str(st.get("file", "")).replace("\\", "/").split("/")[-1]
+        return f"For each row of {name or '?'}"
     return a
 
 
@@ -121,11 +124,11 @@ def unreachable(script):
         nxt = []
         if st.get("disabled"):
             nxt.append(i + 1)
-        elif a in model.WHILE_ACTIONS:
+        elif a in model.BLOCK_STARTS:
             nxt.append(i + 1)
             if i in pairs:
                 nxt.append(pairs[i] + 1)
-        elif a == "End While":
+        elif a in model.BLOCK_ENDS:
             if i in pairs:
                 nxt.append(pairs[i])
         elif a.startswith("If "):

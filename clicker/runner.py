@@ -11,7 +11,7 @@ import threading
 import time
 import webbrowser
 
-from . import clipboard, history, inputs, model, runlog, storage, target, vision
+from . import clipboard, datafile, history, inputs, model, runlog, storage, target, vision
 
 
 PROGRESS_MIN_S = 0.15  # shorter pauses would only flicker a progress bar
@@ -236,6 +236,7 @@ class _Frame:
             raise ScriptFailed(err)
         self.loops = {}
         self.whiles = {}
+        self.rows = {}   # For Each Row state by step index
         self.calls = []
         try:
             self.handler = model.resolve_target(self.steps, script.get("error_handler"), self.labels)
@@ -637,6 +638,36 @@ class Runner(Job):
             return ok
         return self._compare(step, i)
 
+    def _for_each(self, step, i, fr, tag):
+        """Set one variable per column for the next row, or leave the loop when the rows run out."""
+        end = fr.pairs[i]
+        state = fr.rows.get(i)
+        if state is None:
+            path = self.substitute(step.get("file") or "")
+            try:
+                names, rows = datafile.read_table(path, self.substitute(step.get("sheet") or ""))
+            except Exception as e:
+                raise ScriptFailed(f"Step {i + 1}: {e}")
+            start = max(1, int(step.get("start_row") or 1)) - 1
+            rows = rows[start:]
+            cap = int(step.get("max_rows") or 0)
+            if cap:
+                rows = rows[:cap]
+            state = fr.rows[i] = {"names": names, "rows": rows, "next": 0, "start": start}
+            self.log(f"{tag}: {len(rows)} row{'s' if len(rows) != 1 else ''} from {os.path.basename(path)}")
+        k = state["next"]
+        if k >= len(state["rows"]):
+            del fr.rows[i]
+            return ("jump", end + 1) if end + 1 < len(fr.steps) else ("end", None)
+        state["next"] = k + 1
+        for name, val in zip(state["names"], state["rows"][k]):
+            self.values[name] = str(val)
+        self.values["row"] = str(state["start"] + k + 1)
+        self.values["row_count"] = str(state["start"] + len(state["rows"]))
+        self.note(f"  row {self.values['row']}: " + ", ".join(
+            f"{n}={model._short(v, 20)}" for n, v in list(zip(state["names"], state["rows"][k]))[:6]), detail=True)
+        return ("next", None)
+
     def _read_screen_text(self, step):
         region = step.get("region")
         if region:
@@ -828,8 +859,10 @@ class Runner(Job):
                 self.log(f"{tag}: stopped looping after {cap} loops")
             fr.whiles[i] = 0
             return ("jump", end + 1) if end + 1 < len(fr.steps) else ("end", None)
-        if a == "End While":
+        if a in ("End While", "Next Row"):
             return ("jump", fr.pairs[i])
+        if a == "For Each Row":
+            return self._for_each(step, i, fr, tag)
 
         if a == "Count Image":
             cond = self._image_cond(step, i, assets)

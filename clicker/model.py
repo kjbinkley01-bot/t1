@@ -28,7 +28,7 @@ ACTION_GROUPS = [
     ("Variables", ["Set Variable", "Increment Variable", "If Variable"]),
     ("Loops", [
         "While Image Found", "While Image Not Found", "While Pixel Color", "While Variable",
-        "End While", "Loop Back",
+        "End While", "For Each Row", "Next Row", "Loop Back",
     ]),
     ("Flow", [
         "Delay", "Random Delay", "Go to Step", "Call Subroutine", "Return", "Run Script File",
@@ -75,6 +75,10 @@ IMAGE_ACTIONS = {"Click Image", "Wait for Image", "Wait for Image to Vanish",
                  "If Image Found", "If Image Not Found", "While Image Found", "While Image Not Found", "Count Image"}
 IMAGE_MODES = ["any of them", "all of them"]
 WHILE_ACTIONS = {"While Image Found", "While Image Not Found", "While Pixel Color", "While Variable"}
+BLOCK_END = {a: "End While" for a in WHILE_ACTIONS}
+BLOCK_END["For Each Row"] = "Next Row"
+BLOCK_STARTS = set(BLOCK_END)          # steps that open a block
+BLOCK_ENDS = {"End While", "Next Row"}
 TEXT_OPS = ["contains", "not contains", "=", "!=", "<", "<=", ">", ">="]
 SCREEN_ACTIONS = set(dict(ACTION_GROUPS)["Screen"]) | {"Read Text", "Wait for Text", "If Text on Screen", "While Image Found",
                                                       "While Image Not Found", "While Pixel Color"}
@@ -151,6 +155,8 @@ FIELD_SPECS = {
     "Set Clipboard": [("value", "Text", 40, "text")],
     "Copy Clipboard to Variable": [("var", "Save to", 14, "var")],
     "Save Screenshot": [("region", "Region", 16, "region"), ("file", "Save to", 40, "text")],
+    "For Each Row": [("file", "Spreadsheet", 30, "datafile"), ("sheet", "Sheet", 10, "text"),
+                     ("start_row", "From row", 5, "int"), ("max_rows", "Max rows", 5, "int")],
     "Run Script File": [("file", "File", 40, "file")],
     "Show Notification": [("message", "Message", 44, "text")],
 }
@@ -161,7 +167,7 @@ DEFAULTS = {
     "button": "left", "goto": "", "else_goto": "", "region": "", "image": "",
     "text": "", "keys": "", "file": "", "message": "", "color": "",
     "var": "", "value": "", "op": "=", "mode": "text", "max_loops": "0",
-    "title": "", "process": "", "args": "",
+    "title": "", "process": "", "args": "", "sheet": "", "start_row": "1", "max_rows": "0",
 }
 
 # per action defaults that differ from DEFAULTS
@@ -212,6 +218,10 @@ ACTION_HINTS = {
     "While Pixel Color": "Repeats the steps down to End While while the pixel has this color.",
     "While Variable": "Repeats the steps down to End While while the comparison is true.",
     "End While": "Marks the end of the nearest While above it.",
+    "For Each Row": "Runs the steps down to Next Row once per row of a CSV or Excel file. The first row names "
+                    "the columns: 'Email Address' becomes {email_address}. {row} is the row number, "
+                    "{row_count} the total. From row 1 is the first row under the headers.",
+    "Next Row": "Marks the end of the nearest For Each Row above it.",
 }
 
 WAIT_MODES = [
@@ -601,15 +611,20 @@ def match_blocks(steps):
         a = st.get("action")
         if st.get("disabled"):
             continue
-        if a in WHILE_ACTIONS:
+        if a in BLOCK_STARTS:
             stack.append(i)
-        elif a == "End While":
+        elif a in BLOCK_ENDS:
+            opener = "While" if a == "End While" else "For Each Row"
             if not stack:
-                return pairs, f"Step {i + 1}: End While has no While above it."
+                return pairs, f"Step {i + 1}: {a} has no {opener} above it."
             j = stack.pop()
+            if BLOCK_END[steps[j]["action"]] != a:
+                return pairs, (f"Step {i + 1}: {a} closes step {j + 1} ({steps[j]['action']}), which needs "
+                               f"{BLOCK_END[steps[j]['action']]}.")
             pairs[i], pairs[j] = j, i
     if stack:
-        return pairs, f"Step {stack[-1] + 1}: {steps[stack[-1]]['action']} has no End While."
+        a = steps[stack[-1]]["action"]
+        return pairs, f"Step {stack[-1] + 1}: {a} has no {BLOCK_END[a]}."
     return pairs, None
 
 
@@ -647,6 +662,8 @@ def check_step(step, steps=None, labels=None):
         return "Enter part of the window title, or the program name."
     if a == "Move Window" and not step.get("region"):
         return "Draw where the window should go."
+    if a == "For Each Row" and not str(step.get("file") or "").strip():
+        return "Choose the CSV or Excel file to loop over."
     if a == "Open" and not str(step.get("file") or "").strip():
         return "Enter the app, file or web address to open."
     if a in ("Set Variable", "Increment Variable", "If Variable", "While Variable", "Read Text", "Count Image",
@@ -781,6 +798,12 @@ def describe_action(step):
         if a == "Move Window":
             return f"{who} to {format_region(step.get('region'))}"
         return who
+    if a == "For Each Row":
+        name = str(step.get("file", "")).replace("\\", "/").split("/")[-1]
+        extra = f", sheet {step['sheet']}" if step.get("sheet") else ""
+        if int(step.get("max_rows") or 0):
+            extra += f", max {step['max_rows']} rows"
+        return f"Each row of {_short(name, 30)}{extra}"
     if a == "Open":
         what = _short(str(step.get("file", "")), 40)
         return what + (f", wait for {step.get('title')}" if step.get("title") else "")

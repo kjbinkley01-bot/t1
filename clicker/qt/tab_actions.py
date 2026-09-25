@@ -569,6 +569,10 @@ class ActionTab(QWidget):
                 b = GlassButton("Browse", icon="folder-open", small=True)
                 b.clicked.connect(lambda _=False, x=w: self.browse_script(x))
                 box.addWidget(b)
+            elif kind == "datafile":
+                b = GlassButton("Browse", icon="folder-open", small=True)
+                b.clicked.connect(lambda _=False, x=w: self.browse_data(x))
+                box.addWidget(b)
             box.addStretch(1)
             self.details.addLayout(box, row, col * 3 + 1, 1, cost * 3 - 1)
             self.detail_edits[key] = w
@@ -1052,6 +1056,19 @@ class ActionTab(QWidget):
                 edit.setText(model.format_region(self._local_region(region)))
         dialogs.select_region(self.main, done, "Drag the area to search in. Esc cancels.")
 
+    def browse_data(self, edit):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a spreadsheet", "",
+                                              "Spreadsheets (*.csv *.xlsx *.xlsm *.tsv *.txt);;All files (*)")
+        if path:
+            edit.setText(path)
+            try:
+                from .. import datafile
+                names, rows = datafile.read_table(path)
+                self.main.set_status(f"{len(rows)} rows. Columns: " + ", ".join("{" + n + "}" for n in names[:8])
+                                     + (" ..." if len(names) > 8 else ""))
+            except Exception as e:
+                self.main.set_status(f"Could not read it: {e}", error=True)
+
     def browse_script(self, edit):
         path, _ = QFileDialog.getOpenFileName(self, "Script to run", "", "Clicker scripts (*.clk *.clkpkg *.json)")
         if path:
@@ -1238,8 +1255,8 @@ class ActionTab(QWidget):
             return
         one = model.copy_script(self.script)
         step = copy.deepcopy(one["steps"][i])
-        if step["action"] in model.WHILE_ACTIONS or step["action"] in (
-                "End While", "Go to Step", "Loop Back", "Call Subroutine", "Return"):
+        if step["action"] in model.BLOCK_STARTS or step["action"] in model.BLOCK_ENDS or step["action"] in (
+                "Go to Step", "Loop Back", "Call Subroutine", "Return"):
             self.main.set_status("Loops and jumps can only be tested by running the script.", error=True)
             return
         w = step.get("wait") or {}
