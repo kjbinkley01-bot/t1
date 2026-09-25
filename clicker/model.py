@@ -20,7 +20,7 @@ ACTION_GROUPS = [
     ("Keyboard", ["Type Text", "Send Keystroke", "Hot Key", "Key Down", "Key Up"]),
     ("Screen", [
         "Click Image", "Wait for Image", "Wait for Image to Vanish", "Wait for Pixel Color",
-        "Wait for Screen to Settle", "If Image Found", "If Image Not Found", "If Pixel Color",
+        "Wait for Screen to Settle", "If Image Found", "If Image Not Found", "If Pixel Color", "Count Image",
     ]),
     ("Text", ["Read Text"]),
     ("Variables", ["Set Variable", "Increment Variable", "If Variable"]),
@@ -70,7 +70,8 @@ XY_IS_OFFSET = {"Move Mouse by Offset", "Click Image"}
 MOUSE_ACTIONS = set(CLICK_MAP) | set(DRAG_MAP) | set(SCROLL_MAP) | {
     "Move Mouse", "Move Mouse by Offset", "Move Mouse by Angle", "Click Image"}
 IMAGE_ACTIONS = {"Click Image", "Wait for Image", "Wait for Image to Vanish",
-                 "If Image Found", "If Image Not Found", "While Image Found", "While Image Not Found"}
+                 "If Image Found", "If Image Not Found", "While Image Found", "While Image Not Found", "Count Image"}
+IMAGE_MODES = ["any of them", "all of them"]
 WHILE_ACTIONS = {"While Image Found", "While Image Not Found", "While Pixel Color", "While Variable"}
 SCREEN_ACTIONS = set(dict(ACTION_GROUPS)["Screen"]) | {"Read Text", "While Image Found",
                                                       "While Image Not Found", "While Pixel Color"}
@@ -82,6 +83,8 @@ MAX_CALL_DEPTH = 50
 
 _IMG = [
     ("image", "Image", 20, "image"),
+    ("images", "Or these", 20, "images"),
+    ("image_mode", "Look for", 10, "choice:" + ",".join(IMAGE_MODES)),
     ("region", "Search region", 16, "region"),
     ("confidence", "Match %", 5, "percent"),
 ]
@@ -110,6 +113,9 @@ FIELD_SPECS = {
     "If Image Not Found": _IMG + _BRANCH,
     "Wait for Pixel Color": _PIXEL + _TIMEOUT,
     "If Pixel Color": _PIXEL + _BRANCH,
+    "Count Image": [("image", "Image", 20, "image"), ("images", "Also count", 20, "images"),
+                    ("region", "Search region", 16, "region"), ("confidence", "Match %", 5, "percent"),
+                    ("var", "Save count to", 14, "var")],
     "Wait for Screen to Settle": [("region", "Region", 16, "region"),
                                   ("stable_ms", "Still for ms", 6, "int")] + _TIMEOUT,
     "Delay": [("ms", "Milliseconds", 8, "int")],
@@ -139,7 +145,10 @@ DEFAULTS = {
 }
 
 ACTION_HINTS = {
-    "Click Image": "X and Y are an optional offset from the center of the match.",
+    "Click Image": "X and Y are an optional offset from the center of the match. Add more images under "
+                   "Or these for a button with hover or night versions: any of them is clicked.",
+    "Count Image": "Counts every place the image shows (and any extra images) and saves the number, "
+                   "e.g. for If Variable ore_count >= 3.",
     "Move Mouse by Offset": "X and Y are how far to move from the current position.",
     "Move Mouse by Angle": "X is the angle in degrees (0 is right, 90 is up). Y is the distance in pixels.",
     "Wait for Pixel Color": "X and Y are the pixel to watch. Grab fills all three from under the cursor.",
@@ -311,10 +320,20 @@ def image_stem(name):
     return re.sub(r"\.(png|jpg|jpeg|bmp)$", "", name, flags=re.I)
 
 
+def step_images(step):
+    """The step's image followed by its alternates, as stored names."""
+    out = []
+    for n in [step.get("image")] + list(step.get("images") or []):
+        n = image_name(n)
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
 def referenced_images(script):
     names = []
     for st in script.get("steps", []):
-        for n in (st.get("image"), (st.get("wait") or {}).get("image")):
+        for n in step_images(st) + [(st.get("wait") or {}).get("image")]:
             n = image_name(n)
             if n and n not in names:
                 names.append(n)
@@ -435,6 +454,8 @@ def parse_field(kind, raw, label):
         return parse_color(raw, label)
     if kind == "image":
         return image_name(raw)
+    if kind == "images":
+        return [image_name(p) for p in re.split(r"[,;\n]+", raw) if p.strip()]
     if kind.startswith("choice:"):
         return raw.strip() or kind[7:].split(",")[0]
     return raw
@@ -445,6 +466,8 @@ def field_to_text(kind, value, label=""):
         return ""
     if kind == "region":
         return format_region(value)
+    if kind == "images":
+        return ", ".join(image_stem(v) for v in value or [])
     if kind == "percent" or label == "Match %":
         return str(int(round(float(value) * 100)))
     return str(value)
@@ -577,7 +600,7 @@ def check_step(step, steps=None, labels=None):
         return "Choose the script file to run."
     if a == "Random Delay" and (step.get("min_ms") or 0) > (step.get("max_ms") or 0):
         return "Min ms must not be more than Max ms."
-    if a in ("Set Variable", "Increment Variable", "If Variable", "While Variable", "Read Text"):
+    if a in ("Set Variable", "Increment Variable", "If Variable", "While Variable", "Read Text", "Count Image"):
         if not NAME_RE.match(str(step.get("var") or "")):
             return "Enter a variable name (letters, digits and _)."
     if a in ("If Variable", "While Variable") and step.get("op", "=") not in COMPARE_OPS:
@@ -644,6 +667,11 @@ def describe_action(step):
         return f"Keys {step.get('keys', '')}"
     if a in SCROLL_MAP:
         return f"{step.get('amount', 1)} notches"
+    alts = len(step_images(step)) - 1
+    if alts > 0:
+        img += f" +{alts}" + (" (all)" if step.get("image_mode") == IMAGE_MODES[1] else "")
+    if a == "Count Image":
+        return f"Count {img} into {{{step.get('var')}}}"
     if a == "Click Image":
         return f"Find {img}, max {step.get('timeout_s', 10)} s"
     if a == "Wait for Image":

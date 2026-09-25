@@ -5,8 +5,8 @@ import os
 
 import time
 
-from PySide6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QLinearGradient, QPainter, QShortcut
+from PySide6.QtCore import QEvent, QObject, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QKeySequence, QLinearGradient, QPainter, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFileDialog, QGridLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QStyledItemDelegate, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
@@ -16,6 +16,7 @@ from ..runner import Runner
 from ..storage import AssetStore
 from . import dialogs
 from .glass import GlassPanel, font
+from .thumbs import ImageStrip, step_icon
 from .widgets import Caption, GlassButton, GlassSwitch, clear_layout
 
 SPEEDS = ["0.25x", "0.5x", "0.75x", "1.0x", "1.5x", "2.0x", "3.0x"]
@@ -428,6 +429,7 @@ class ActionTab(QWidget):
         self.tree.setHeaderLabels([c[0].upper() for c in COLUMNS])
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
+        self.tree.setIconSize(QSize(34, 20))  # image steps show their template
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setAllColumnsShowFocus(True)
@@ -497,7 +499,7 @@ class ActionTab(QWidget):
         spec = model.FIELD_SPECS.get(action, [])
         row, col = -1, 99
         for key, text, width, kind in spec:
-            cost = 2 if kind in ("image", "region") else 1
+            cost = 2 if kind in ("image", "region", "images") else 1
             if col + cost > 3:
                 row, col = row + 1, 0
             lab = QLabel(text)
@@ -509,6 +511,10 @@ class ActionTab(QWidget):
                 w = QComboBox()
                 w.addItems(kind[7:].split(","))
                 w.setCurrentText(val or kind[7:].split(",")[0])
+            elif kind == "images":
+                w = ImageStrip(self)
+                w.setText(val)
+                box.addWidget(w)
             elif kind == "image":
                 w = QComboBox()
                 w.setEditable(True)
@@ -526,7 +532,7 @@ class ActionTab(QWidget):
                 w.setMinimumWidth(max(56, min(360, width * 9)))
                 if kind in ("int", "sint", "percent"):
                     w.setMaximumWidth(max(64, width * 11))
-            if kind != "image":
+            if kind not in ("image", "images"):
                 box.addWidget(w)
             if kind == "region":
                 b = GlassButton("Draw", icon="bounding-box", small=True)
@@ -855,7 +861,10 @@ class ActionTab(QWidget):
             else:
                 old = self._rows[i] if i < len(self._rows) else None
             if old != (texts, flag):
-                self._paint_row(tree.topLevelItem(i), texts, flag, i == self.running_row)
+                item = tree.topLevelItem(i)
+                self._paint_row(item, texts, flag, i == self.running_row)
+                item.setIcon(2, step_icon(self.assets, steps[i], 34, 20, self.devicePixelRatioF())
+                             if steps[i]["action"] in model.IMAGE_ACTIONS else QIcon())
         self._rows = rows
         tree.clearSelection()
         if select is not None:

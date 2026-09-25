@@ -233,6 +233,51 @@ def find_image(needle, region=None, confidence=0.9, grayscale=False, scales=None
     return match_in(hay, needle, confidence, grayscale, ox, oy, scales)
 
 
+def match_all_in(hay, needle, confidence=0.9, grayscale=False, ox=0, oy=0, scales=None, limit=500):
+    """Every place needle shows in hay (best first), without overlapping duplicates."""
+    if needle is None or hay is None:
+        return []
+    if grayscale:
+        hay = cv2.cvtColor(hay, cv2.COLOR_BGR2GRAY)
+        needle = cv2.cvtColor(needle, cv2.COLOR_BGR2GRAY)
+    for f in scales or (1.0,):
+        n2 = scaled(needle, float(f))
+        nh, nw = n2.shape[:2]
+        hh, hw = hay.shape[:2]
+        if nh > hh or nw > hw or nh == 0 or nw == 0 or (min(nh, nw) < 4 and abs(f - 1.0) > 1e-3):
+            continue
+        channels = 1 if n2.ndim == 2 else n2.shape[2]
+        if float(n2.reshape(-1, channels).std(axis=0).max()) < 1e-3:
+            res = cv2.matchTemplate(hay, n2, cv2.TM_SQDIFF)
+            score = 1.0 - np.sqrt(np.maximum(res, 0) / (nw * nh * channels)) / 255.0
+        else:
+            score = np.nan_to_num(cv2.matchTemplate(hay, n2, cv2.TM_CCOEFF_NORMED), nan=-1.0,
+                                  posinf=-1.0, neginf=-1.0)
+        ys, xs = np.nonzero(score >= confidence)
+        if not len(xs):
+            continue
+        vals = score[ys, xs]
+        if len(vals) > 20000:  # keep the strongest candidates; the rest are neighbours of these
+            keep = np.argpartition(-vals, 20000)[:20000]
+            ys, xs, vals = ys[keep], xs[keep], vals[keep]
+        order = np.argsort(-vals)
+        picked = []
+        for k in order:
+            x, y = int(xs[k]), int(ys[k])
+            if any(abs(x - px) < nw * 0.6 and abs(y - py) < nh * 0.6 for px, py, _ in picked):
+                continue
+            picked.append((x, y, float(vals[k])))
+            if len(picked) >= limit:
+                break
+        return [Match(x + ox, y + oy, nw, nh, round(s, 3)) for x, y, s in picked]
+    return []
+
+
+def find_all(needle, region=None, confidence=0.9, grayscale=False, scales=None, limit=500):
+    hay, (ox, oy) = capture(region)
+    return match_all_in(hay, needle, confidence, grayscale, ox, oy, scales, limit)
+
+
 # ---------------------------------------------------------------- text (OCR)
 
 class OcrUnavailable(RuntimeError):
@@ -327,17 +372,29 @@ class Checker:
         self.base = None
         self.last = None
         self.still_since = None
-        self.last_match = None
+        self.last_by = {}        # image name -> where it was last found
+        self.matched_name = None  # which image the last check found (steps can list several)
         if self.memory is not None and self.c.get("kind") in ("image_appears", "image_vanishes"):
-            self.last_match = self.memory.get(self._mem_key())
+            for name in self._names():
+                hit = self.memory.get(self._mem_key(name))
+                if hit is not None:
+                    self.last_by[name] = hit
 
-    def _mem_key(self):
+    @property
+    def last_match(self):
+        return self.last_by.get(self.matched_name) if self.matched_name else None
+
+    def _names(self):
+        return model.step_images(self.c)
+
+    def _mem_key(self, name):
         r = self.c.get("region")
-        return model.image_name(self.c.get("image")), tuple(r) if r else None
+        return name, tuple(r) if r else None
 
-    def _find(self, needle, region, conf, gray, scales):
+    def _find(self, needle, region, conf, gray, scales, name=None):
         """Search near the last match first; things on screen rarely move far between checks."""
-        m = self.last_match
+        name = name or model.image_name(self.c.get("image"))
+        m = self.last_by.get(name)
         if m is not None:
             pad = max(24, m.w // 2, m.h // 2)
             near = [m.x - pad, m.y - pad, m.w + 2 * pad, m.h + 2 * pad]
@@ -352,33 +409,59 @@ class Checker:
             if x1 - x0 >= m.w and y1 - y0 >= m.h:
                 hit = find_image(needle, [x0, y0, x1 - x0, y1 - y0], conf, gray, scales)
                 if hit is not None:
-                    self._remember(hit)
+                    self._remember(name, hit)
                     return hit
         hit = find_image(needle, region, conf, gray, scales)
-        self._remember(hit)
+        self._remember(name, hit)
         return hit
 
-    def _remember(self, hit):
-        self.last_match = hit
-        if self.memory is not None and hit is not None:
+    def _remember(self, name, hit):
+        if hit is None:
+            self.last_by.pop(name, None)
+            return
+        self.last_by[name] = hit
+        if self.memory is not None:
             if len(self.memory) > 200:
                 self.memory.clear()
-            self.memory[self._mem_key()] = hit
+            self.memory[self._mem_key(name)] = hit
 
-    def _needle(self):
-        name = model.image_name(self.c.get("image"))
+    def _needle(self, name=None):
+        name = name or model.image_name(self.c.get("image"))
         img = self.get_image(name) if name else None
         if img is None:
             raise ValueError(f"Image '{name or '(none)'}' is missing")
         return img
+
+    def _find_images(self, region):
+        """The step's image, or with alternates: any one of them (first found) or all of them."""
+        conf = float(self.c.get("confidence") or 0.9)
+        gray = bool(self.c.get("grayscale"))
+        scales = self.c.get("scales")
+        names = self._names() or [model.image_name(self.c.get("image"))]
+        need_all = self.c.get("image_mode") == model.IMAGE_MODES[1] and len(names) > 1
+        # try the one that matched last time first: the screen usually still shows the same state
+        if self.matched_name in names and not need_all:
+            names = [self.matched_name] + [n for n in names if n != self.matched_name]
+        first = None
+        for name in names:
+            m = self._find(self._needle(name), region, conf, gray, scales, name)
+            if m is None:
+                if need_all:
+                    return None
+                continue
+            if first is None:
+                first = m
+                self.matched_name = name
+            if not need_all:
+                return m
+        return first
 
     def check(self):
         """Return (is_true, Match or None)."""
         k = self.c.get("kind")
         region = self.c.get("region") or None
         if k in ("image_appears", "image_vanishes"):
-            m = self._find(self._needle(), region, float(self.c.get("confidence") or 0.9),
-                           bool(self.c.get("grayscale")), self.c.get("scales"))
+            m = self._find_images(region)
             if k == "image_appears":
                 return m is not None, m
             return m is None, None

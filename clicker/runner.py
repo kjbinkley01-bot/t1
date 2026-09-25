@@ -304,6 +304,7 @@ class Runner(Job):
         if timed:
             self.announce(float(timeout_s), "wait")
         checker = vision.Checker(self._cond(cond), assets.get, self.seen)
+        self.last_checker = checker
         ok, match, why = vision.wait_for(checker, timeout_s, poll_ms, self.stop_event, gate=self.gate)
         if timed:
             self.emit("progress", None)  # found early: the bar goes away instead of running to the timeout
@@ -568,11 +569,16 @@ class Runner(Job):
         return ("next", None) if t is None else ("jump", t)
 
     def _image_cond(self, step, i, assets, kind="image_appears"):
-        name = model.image_name(step.get("image"))
-        if assets.get(name) is None:
-            raise ScriptFailed(f"Step {i + 1}: image '{name}' is missing from the script")
-        return {"kind": kind, "image": name, "region": step.get("region"),
+        names = model.step_images(step)
+        for name in names or [model.image_name(step.get("image"))]:
+            if assets.get(name) is None:
+                raise ScriptFailed(f"Step {i + 1}: image '{name}' is missing from the script")
+        cond = {"kind": kind, "image": names[0] if names else "", "region": step.get("region"),
                 "confidence": step.get("confidence", 0.9), "grayscale": step.get("grayscale", False)}
+        if len(names) > 1:
+            cond["images"] = names[1:]
+            cond["image_mode"] = step.get("image_mode") or model.IMAGE_MODES[0]
+        return cond
 
     def _var(self, step):
         return self.values.get(step.get("var"), "")
@@ -701,6 +707,25 @@ class Runner(Job):
         if a == "End While":
             return ("jump", fr.pairs[i])
 
+        if a == "Count Image":
+            cond = self._image_cond(step, i, assets)
+            conf = float(cond["confidence"])
+            region = cond.get("region")
+            if region:
+                self.last_region = region
+            hits = []
+            for name in model.step_images(step):
+                hits += vision.find_all(assets.get(name), region, conf, bool(cond.get("grayscale")), self.scales)
+            self.values[step.get("var")] = str(len(hits))
+            if hits:
+                x0 = min(m.x for m in hits)
+                y0 = min(m.y for m in hits)
+                x1 = max(m.x + m.w for m in hits)
+                y1 = max(m.y + m.h for m in hits)
+                self._highlight((x0, y0, x1 - x0, y1 - y0))
+            self.log(f"{tag}: found {len(hits)}, {{{step.get('var')}}} = {len(hits)}")
+            return ("next", None)
+
         if a in model.IMAGE_ACTIONS:
             cond = self._image_cond(step, i, assets,
                                     "image_vanishes" if a == "Wait for Image to Vanish" else "image_appears")
@@ -720,6 +745,10 @@ class Runner(Job):
                 return ("fail", f"{model.image_stem(name)} {verb} within {timeout:g} s")
             if m:
                 self._highlight(m.rect)
+            if len(model.step_images(step)) > 1 and m is not None:
+                which = getattr(getattr(self, "last_checker", None), "matched_name", None)
+                if which:
+                    self.note(f"  matched {model.image_stem(which)}", detail=True)
             if a == "Click Image":
                 cx, cy = m.center
                 tx, ty = cx + (x or 0), cy + (y or 0)
