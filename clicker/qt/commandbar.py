@@ -37,6 +37,8 @@ def commands(main):
     add("Save script", "Action Script", on("actions", a.save), "Ctrl+S")
     add("Save script as...", "Action Script", on("actions", lambda: a.save(True)))
     add("Test the selected step", "Action Script", on("actions", a.test_step), keywords="try one")
+    add("Show every match of the selected step's picture", "Action Script", on("actions", a.show_matches),
+        keywords="find image where search debug near miss highlight")
     add("Undo", "Action Script", on("actions", a.undo), "Ctrl+Z")
     add("Redo", "Action Script", on("actions", a.redo), "Ctrl+Y")
     add("Hide the chart" if a.chart_on else "Show the chart", "View", on("actions", lambda: a.set_chart_visible(

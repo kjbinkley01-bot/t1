@@ -35,6 +35,24 @@ in System Settings > Privacy & Security. For Read Text: `brew install tesseract`
   carry on to the next. While it runs, the current card glows and finished ones get a tick. Chains are saved
   as .clkchain files and live in the Library too (with their own filter), and each script's run still shows
   up in History.
+* **Math and text in variables:** start a Set Variable value with = to work it out (`= {count} * 2 + 1`,
+  `= upper({name}) + "!"`, `= round({price} * 1.05, 2)`), or put `{= ...}` inside any text a step types.
+  Functions: round, int, abs, min, max, sqrt, floor, ceil, random, len, upper, lower, trim, replace,
+  contains, left, right, mid, pad. Mistakes are flagged in the step editor before you run.
+* **Version history:** each save keeps the copy it replaced (the last 10 of each file). Right-click a card
+  in the Library (or use the palette) for **Earlier versions...** and open any of them; nothing changes
+  until you save.
+* **Chains everywhere:** script hotkeys, the schedule, the phone remote and web page, screen trigger outputs
+  and Run alongside can start chains too. A chain card can have **Only if** (`{gold} < 500`, `{run} > 1`)
+  so it only runs when that's true.
+* **Run stats on Library cards:** "12 runs · 92%" from History, and a red dot when the last run failed.
+* **Check my scripts** (Check in the Library, or the palette): looks over every file in the Library and
+  the ones your hotkeys, schedule and phone remote use, and lists anything that would stop them running
+  (missing files or pictures, broken jumps, unfinished steps, missing scripts behind Run Script File or
+  a chain card), with Open and Remove buttons.
+* **Show every match on screen** (right-click an image step): outlines every place its picture is found
+  with its score, plus dashed near misses just below the step's match setting, so you can see why a step
+  fails or clicks the wrong one.
 * **Command palette (Ctrl+K** or the search icon): type a few letters to run any command, jump to a tab,
   start a new step of any type, go to a step of the open script, open a Library file, or switch wallpaper.
   Arrow keys and Enter; letters in order work too ("nsc" finds New script).

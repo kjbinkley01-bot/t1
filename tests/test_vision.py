@@ -120,3 +120,17 @@ def test_checker_falls_back_to_full_screen_when_image_moved_far(screen):
     assert ok and (m.x, m.y) == (700, 500)
     screen.clear()
     assert vision.Checker(cond, {"t.png": tpl}.get, memory).check()[0] is False
+
+
+def test_survey_splits_matches_from_near_misses(screen):
+    import numpy as np
+    from conftest import make_template
+    tpl = make_template(40, 24, seed=3)
+    hay = np.full((300, 400, 3), 30, np.uint8)
+    hay[20:44, 30:70] = tpl
+    rough = tpl.astype(np.int16) + np.random.default_rng(1).integers(-60, 60, tpl.shape)
+    hay[150:174, 200:240] = np.clip(rough, 0, 255).astype(np.uint8)
+    screen.img = hay
+    hits, near = vision.survey(tpl, confidence=0.95, margin=0.4)
+    assert [(m.x, m.y) for m in hits] == [(30, 20)]
+    assert [(m.x, m.y) for m in near] == [(200, 150)] and 0.55 <= near[0].score < 0.95

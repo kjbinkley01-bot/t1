@@ -1594,11 +1594,69 @@ class ActionTab(QWidget):
             m.addAction(f"Run from step {i + 1}", lambda: self.debug_start(start_at=i))
             m.addAction(f"Run to step {i + 1}, then pause", lambda: self.debug_start(run_to=i))
             m.addAction("Test this step", self.test_step)
+            if self._step_pictures(self.script["steps"][i])[0]:
+                m.addAction("Show every match on screen", lambda: self.show_matches(i))
             m.addSeparator()
         if any(st.get("bp") for st in self.script["steps"]):
             m.addAction("Clear all breakpoints", self.clear_breakpoints)
         m.addAction("Show variables", lambda: self.vars_panel.refresh(show=True))
         m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _step_pictures(st):
+        """(picture names, match setting, region) a step looks for: its own, or its wait's."""
+        names = model.step_images(st)
+        src = st
+        if not names:
+            src = st.get("wait") or {}
+            names = model.step_images(src) if src.get("mode", "").startswith("image") else []
+        return names, float(src.get("confidence", 0.9) or 0.9), src.get("region")
+
+    def show_matches(self, i=None):
+        """Outline every place the step's picture is on screen (and near misses), to see what it would find."""
+        i = self._selected() if i is None else i
+        if i is None or self.main.job_running():
+            return
+        names, conf, region = self._step_pictures(self.script["steps"][i])
+        imgs = [self.assets.get(n) for n in names if self.assets.get(n) is not None]
+        if not imgs:
+            self.main.set_status("This step has no picture to look for.", error=True)
+            return
+        t = target.normalize((self.script.get("settings") or {}).get("target"))
+        scales = vision.scale_candidates(1.0, bool((self.script.get("settings") or {}).get("scale_search")))
+        self.main.hide()  # get out of the way of what's being searched
+
+        def look():
+            io = None
+            try:
+                if t is not None:
+                    io = target.WindowIO(t)
+                    io.attach()
+                    vision.set_thread_source(io)
+                hits, near = [], []
+                for img in imgs:
+                    h, n = vision.survey(img, tuple(region) if region else None, conf,
+                                         bool(self.script["steps"][i].get("grayscale")), scales)
+                    hits += h
+                    near += n
+                if io is not None:
+                    hits = [m._replace(**dict(zip("xywh", io.to_screen(m.rect)))) for m in hits]
+                    near = [m._replace(**dict(zip("xywh", io.to_screen(m.rect)))) for m in near]
+            except Exception as e:
+                self.main.showNormal()
+                self.main.set_status(f"Couldn't look: {e}", error=True)
+                return
+            finally:
+                vision.set_thread_source(None)
+            hits.sort(key=lambda m: -m.score)
+            near.sort(key=lambda m: -m.score)
+            self.main.showNormal()
+            from .matches import MatchOverlay, summary_text
+            text = f"Step {i + 1}: " + summary_text(hits, near[:12], conf)
+            self.main.set_status(text)
+            self._overlay = MatchOverlay(hits, near[:12], text)
+            self._overlay.open()
+        QTimer.singleShot(350, look)
 
     def debug_start(self, start_at=0, run_to=None):
         job = self._my_job()

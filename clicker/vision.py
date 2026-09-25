@@ -263,6 +263,15 @@ def find_all(needle, region=None, confidence=0.9, grayscale=False, scales=None, 
     return match_all_in(hay, needle, confidence, grayscale, ox, oy, scales, limit)
 
 
+def survey(needle, region=None, confidence=0.9, grayscale=False, scales=None, margin=0.15, limit=40):
+    """Every match at or above confidence, and the near misses a little below it (best first each).
+
+    Near misses show why a step fails ("the button was there at 84%") or might click the wrong thing."""
+    hay, (ox, oy) = capture(region)
+    found = match_all_in(hay, needle, max(0.3, confidence - margin), grayscale, ox, oy, scales, limit)
+    return [m for m in found if m.score >= confidence], [m for m in found if m.score < confidence]
+
+
 # ---------------------------------------------------------------- text (OCR)
 
 class OcrUnavailable(RuntimeError):
