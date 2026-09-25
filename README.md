@@ -19,6 +19,29 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.7
+* **Edit recordings** (Macro Recorder): a timeline under Record/Play shows clicks, drags, scrolls, mouse
+  movement and keys (combinations like ctrl+s and typed words as one chip). Drag across it to select, then
+  **Play selection**, **Delete** or **Keep only this**. Drag the yellow handles (or type times) to trim the
+  start and end. Long idle stretches are hatched, and **Shorten pauses** turns every pause longer than N s into
+  M s. Undo/redo, zoom, and a list of the events in the selection. Presses and releases always stay paired,
+  so an edit never leaves a key or button held. Edits are saved when you Save.
+* **Alerts** (Settings > Alerts): a Discord webhook message (with the step, reason, run time, last log lines
+  and the failure screenshot) and/or a phone push through the free ntfy app when a script finishes, fails,
+  loses its window, or a trigger fires. Quiet hours, and Send test buttons.
+* **History tab**: runs, success rate, average run time, the step that fails most, runs per day, where failed
+  runs stopped and every recent run (double-click for its log). Filter by script and period, export CSV, and
+  jump to the failing step. History lives in `history.jsonl` next to your settings.
+* **Smarter image matching**: image steps take extra images (**Or these**) and find **any of them** (normal,
+  hover and night versions of a button) or **all of them**; the log says which one matched. **Count Image**
+  saves how many times an image shows into a variable. The step list shows each image step's template.
+* **Loop and jump overview**: colored arrows beside the step list show where every While, If, Go to, Loop Back,
+  Call and on-timeout jump leads (the selected step's are bold). The **Flow** panel lists them (click to go),
+  and steps that can never run are dimmed with a warning. The **Flow** button hides both.
+* **Script hotkeys** (Settings > Script hotkeys, or the tray menu): give any saved script its own keys to start
+  it from anywhere; press again to stop. **Keep Clicker running in the tray** keeps hotkeys working after you
+  close the window; the tray menu shows what's running, runs scripts and quits.
+
 ## What's new in 2.6: background mode in every tab
 The **Run in** window choice from the Action Script is now in the other tabs too:
 

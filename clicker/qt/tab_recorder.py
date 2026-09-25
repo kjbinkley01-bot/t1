@@ -12,6 +12,7 @@ from .. import model, storage, target, vision
 from ..recorder import Player, Recorder, recording_to_steps, to_window
 from ..storage import AssetStore
 from .glass import GlassPanel, font
+from .rec_timeline import RecordingEditor
 from .runin import RunInButton
 from .widgets import Caption, GlassButton, GlassSwitch
 
@@ -138,6 +139,9 @@ class RecorderTab(QWidget):
             g.setColumnStretch(c, 1)
         root.addWidget(p)
 
+        self.editor = RecordingEditor(self)
+        root.addWidget(self.editor)
+
         # variation
         p = GlassPanel(radius=30)
         vl = QVBoxLayout(p)
@@ -259,7 +263,30 @@ class RecorderTab(QWidget):
         self.lbl_note.style().unpolish(self.lbl_note)
         self.lbl_note.style().polish(self.lbl_note)
 
+    def replace_events(self, events):
+        """An edit from the timeline."""
+        self.events = events
+        self.dirty = True
+        self._show_counts()
+        self.main.update_title()
+
+    def play_events(self, events, note):
+        if self.main.job_running() or self.recorder.active or not events:
+            return
+        try:
+            o = self._read_options()
+        except ValueError as e:
+            self.main.set_status(str(e), error=True)
+            return
+        job = Player(events, self.main.emitter("recording"), repeat=1,
+                     speed_min=o["speed_min"], speed_max=o["speed_max"], settle=o["settle"],
+                     start_delay=0.5 if self.btn_runin.target else 2.0,
+                     target=self.btn_runin.target, recorded_in=self.recorded_in)
+        if self.main.start_job(job, self):
+            self._note(note + ("" if self.btn_runin.target else ". Starting in 2 s."))
+
     def update_state(self, running_mine, running_any, paused):
+        self.editor.setEnabled(not self.recorder.active and not running_mine)
         rec = self.recorder.active
         self.btn_rec.setEnabled(not rec and not running_any)
         self.btn_rec_stop.setEnabled(rec)
@@ -320,6 +347,7 @@ class RecorderTab(QWidget):
         self.path = None
         self.dirty = bool(self.events)
         self._show_counts()
+        self.editor.load(self.events)
         self._note(f"Recorded {len(self.events)} events"
                    + (f" in {target.describe(self.recorded_in)} ({dropped} outside it left out)" if dropped else
                       f" in {target.describe(self.recorded_in)}" if self.recorded_in else "")
@@ -369,6 +397,7 @@ class RecorderTab(QWidget):
             return
         self.events, self.path, self.dirty, self.recorded_in = [], None, False, None
         self._show_counts()
+        self.editor.load(self.events)
         self._note(self._where_note())
         self.main.update_title()
 
@@ -389,6 +418,7 @@ class RecorderTab(QWidget):
             self.btn_runin.set_target(self.recorded_in)
             self._target_changed(self.recorded_in)
         self._show_counts()
+        self.editor.load(self.events)
         self._note(f"Opened {os.path.basename(path)}"
                    + (f", recorded in {target.describe(self.recorded_in)}." if self.recorded_in else "."))
         self.main.update_title()
