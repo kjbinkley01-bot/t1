@@ -367,9 +367,7 @@ def triggers_path():
 def save_triggers(path, rules, assets):
     used = set()
     for r in rules:
-        name = model.image_name((r.get("condition") or {}).get("image"))
-        if name:
-            used.add(name)
+        used.update(model.step_images(r.get("condition") or {}))
     _write_zip(path, "rules.json", {"format": "clicker-triggers", "version": 1, "rules": rules},
                assets, only=used)
 

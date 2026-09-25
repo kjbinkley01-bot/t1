@@ -145,3 +145,22 @@ def test_trigger_waits_for_a_closed_window(fake_inputs, screen):
     eng.stop()
     eng.thread.join(2)
     assert any("not open" in str(p) and "Waiting" in str(p) for _, p in events)
+
+
+def test_trigger_rules_fire_on_any_of_their_images_and_keep_them_when_saved(fake_inputs, screen, tmp_path):
+    from clicker import storage
+    tpl_a, tpl_b = make_template(seed=11), make_template(seed=12)
+    screen.paste(tpl_b, 300, 200)                      # only the alternate is showing
+    assets = AssetStore()
+    assets.put_image("a.png", tpl_a)
+    assets.put_image("b.png", tpl_b)
+    rule = triggers.new_rule()
+    rule["condition"].update(image="a.png", images=["b.png"], image_mode="any of them")
+    eng = triggers.TriggerEngine(lambda: [rule], assets, lambda *a: None, Ctx())
+    ok, match = eng.test_rule(rule)
+    assert ok and match.center == (320, 212)
+    assert "+1" in triggers.describe_condition(rule["condition"])
+    p = str(tmp_path / "r.clktrig")
+    storage.save_triggers(p, [rule], assets)
+    _rules, got = storage.load_triggers(p)
+    assert got.has("b.png")

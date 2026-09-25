@@ -14,6 +14,7 @@ from .. import inputs, model, storage, target, triggers, vision
 from . import dialogs, glass
 from .glass import GlassPanel, font
 from .runin import RunInButton, WindowSpace
+from .thumbs import ImageStrip
 from .widgets import Caption, GlassButton, GlassSwitch
 
 
@@ -113,6 +114,23 @@ class OutputDialog(dialogs.GlassDialog):
 def edit_output(main, output=None):
     d = OutputDialog(main, output)
     return d.result_output if d.exec() == QDialog.DialogCode.Accepted else None
+
+
+class _StripHost:
+    """Lets the image strip (built for the Action Script tab) capture and load into the rule images."""
+
+    def __init__(self, tab):
+        self.tab = tab
+
+    @property
+    def assets(self):
+        return self.tab.main.trigger_assets
+
+    def capture_image(self, strip):
+        self.tab.capture_image(into=strip)
+
+    def load_image(self, strip):
+        self.tab.load_image(into=strip)
 
 
 class TriggersTab(QWidget):
@@ -222,8 +240,23 @@ class TriggersTab(QWidget):
         self.cb_image.setEditable(True)
         self.cb_image.currentTextChanged.connect(lambda _t: self._show_thumb())
         self.lab_image = QLabel("Image")
-        grid.addWidget(self.lab_image, 1, 0)
-        grid.addWidget(self.cb_image, 1, 1, 1, 3)
+        grid.addWidget(self.lab_image, 1, 0, Qt.AlignmentFlag.AlignTop)
+        self.image_box = QWidget()
+        ib = QVBoxLayout(self.image_box)
+        ib.setContentsMargins(0, 0, 0, 0)
+        ib.setSpacing(6)
+        ib.addWidget(self.cb_image)
+        alt = QHBoxLayout()
+        alt.setSpacing(8)
+        alt.addWidget(detail("or"))
+        self.strip = ImageStrip(_StripHost(self))
+        alt.addWidget(self.strip, 1)
+        self.cb_mode = QComboBox()
+        self.cb_mode.addItems(model.IMAGE_MODES)
+        self.cb_mode.setToolTip("With extra images: fire when any one shows, or only when all show")
+        alt.addWidget(self.cb_mode)
+        ib.addLayout(alt)
+        grid.addWidget(self.image_box, 1, 1, 1, 3)
         self.lab_match = QLabel("Match")
         self.sl_conf = QSlider(Qt.Orientation.Horizontal)
         self.sl_conf.setRange(50, 100)
@@ -290,7 +323,8 @@ class TriggersTab(QWidget):
         self.thumb.setStyleSheet("border: 1.5px dashed rgba(127,220,255,140); border-radius: 14px; color: #7fdcff;")
         thumb_col.addWidget(self.thumb)
         tb = QHBoxLayout()
-        for t, ic, cb in (("Capture", "camera", self.capture_image), ("Load", "image", self.load_image)):
+        for t, ic, cb in (("Capture", "camera", lambda: self.capture_image()),
+                          ("Load", "image", lambda: self.load_image())):
             b = GlassButton(t, icon=ic, small=True)
             b.clicked.connect(cb)
             tb.addWidget(b)
@@ -409,7 +443,7 @@ class TriggersTab(QWidget):
         kind = model.CONDITION_ID.get(self.cb_kind.currentText(), "image_appears")
         img = kind.startswith("image")
         px = kind.startswith("pixel")
-        for w in (self.lab_image, self.cb_image, self.lab_match, self.sl_conf, self.lbl_conf, self.sw_gray,
+        for w in (self.lab_image, self.image_box, self.lab_match, self.sl_conf, self.lbl_conf, self.sw_gray,
                   self.thumb_col):
             w.setVisible(img)
         self.lab_px.setVisible(px)
@@ -473,6 +507,8 @@ class TriggersTab(QWidget):
         self.cb_image.clear()
         self.cb_image.addItems(self.main.trigger_assets.names())
         self.cb_image.setCurrentText(c.get("image") or "")
+        self.strip.setText(", ".join(model.image_stem(n) for n in c.get("images") or []))
+        self.cb_mode.setCurrentText(c.get("image_mode") or model.IMAGE_MODES[0])
         self.e_region.setText(model.format_region(c.get("region")))
         self.sl_conf.setValue(int(round(float(c.get("confidence") or 0.9) * 100)))
         self.sw_gray.setChecked(bool(c.get("grayscale")))
@@ -524,6 +560,10 @@ class TriggersTab(QWidget):
              "color": model.parse_color(self.e_color.text()) if self.e_color.text().strip() else "",
              "tolerance": model.parse_int(self.e_tol.text() or "12", "Tolerance", 0, 255),
              "stable_ms": model.parse_int(self.e_stable.text() or "800", "Still for", 50)}
+        alts = [n for n in self.strip.names if n != c["image"]]
+        if alts and kind.startswith("image"):
+            c["images"] = alts
+            c["image_mode"] = self.cb_mode.currentText()
         rule = dict(base)
         rule.update({
             "name": self.e_name.text().strip() or "Rule",
@@ -631,7 +671,7 @@ class TriggersTab(QWidget):
         self._refresh_outputs()
         self.lst.setCurrentRow(i + d)
 
-    def capture_image(self):
+    def capture_image(self, into=None):
         def done(region, img):
             if img is None:
                 return
@@ -642,8 +682,14 @@ class TriggersTab(QWidget):
             if name is None:
                 return
             name = self.main.trigger_assets.add_image(img, name or "trigger")
+            cur = self.cb_image.currentText()
             self.cb_image.clear()
             self.cb_image.addItems(self.main.trigger_assets.names())
+            if into is not None:
+                self.cb_image.setCurrentText(cur)
+                into.setCurrentText(name)
+                self._msg("Added. The rule now also looks for this image.")
+                return
             self.cb_image.setCurrentText(name)
             if not self.e_region.text().strip():
                 pad = 150
@@ -652,7 +698,7 @@ class TriggersTab(QWidget):
             self._msg("Captured. The search region is set around it; clear it to search everywhere.")
         dialogs.select_region(self.main, done, "Drag around the image this rule should look for. Esc cancels.")
 
-    def load_image(self):
+    def load_image(self, into=None):
         path, _ = QFileDialog.getOpenFileName(self, "Load image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
         if not path:
             return
@@ -663,8 +709,13 @@ class TriggersTab(QWidget):
             QMessageBox.warning(self, "Could not load image", str(e))
             return
         name = self.main.trigger_assets.add_image(img, os.path.splitext(os.path.basename(path))[0])
+        cur = self.cb_image.currentText()
         self.cb_image.clear()
         self.cb_image.addItems(self.main.trigger_assets.names())
+        if into is not None:
+            self.cb_image.setCurrentText(cur)
+            into.setCurrentText(name)
+            return
         self.cb_image.setCurrentText(name)
 
     def draw_region(self):

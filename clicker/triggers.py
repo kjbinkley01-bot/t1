@@ -81,6 +81,8 @@ def describe_output(o):
 def describe_condition(c):
     k = c.get("kind")
     img = model.image_stem(c.get("image")) or "?"
+    if c.get("images"):
+        img += f" +{len(c['images'])}" + (" (all)" if c.get("image_mode") == model.IMAGE_MODES[1] else "")
     if k == "image_appears":
         return f"{img} appears"
     if k == "image_vanishes":
@@ -108,6 +110,10 @@ def check_rule(rule, assets):
     k = c.get("kind")
     if k in ("image_appears", "image_vanishes") and not assets.has(c.get("image")):
         return "Capture or load the image to look for."
+    if k in ("image_appears", "image_vanishes"):
+        for n in c.get("images") or []:
+            if not assets.has(n):
+                return f"Image '{model.image_stem(n)}' is missing. Capture or load it again."
     if k in ("pixel_is", "pixel_changes") and (c.get("x") is None or c.get("y") is None):
         return "Enter the pixel position, or use Grab."
     if k == "pixel_is" and not c.get("color"):
