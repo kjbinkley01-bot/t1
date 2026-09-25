@@ -217,11 +217,6 @@ def load_recording_full(path):
     return events, options, images, snaps
 
 
-def load_recording(path):
-    events, options, _i, _s = load_recording_full(path)
-    return events, options
-
-
 def _check_recording(data):
     events = data.get("events") if isinstance(data, dict) else None
     if not isinstance(events, list):

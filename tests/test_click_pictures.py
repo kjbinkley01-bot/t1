@@ -83,7 +83,7 @@ def test_recordings_with_pictures_and_snapshots_save_as_a_package(tmp_path):
     assert images["click_001.png"].shape == (24, 40, 3) and snaps == {"snap_0001.jpg": b"jpg"}
     plain = str(tmp_path / "plain.clkrec")
     storage.save_recording(plain, events[:2], {})
-    assert storage.load_recording(plain)[0] == events[:2]
+    assert storage.load_recording_full(plain)[0] == events[:2]
     assert open(plain, encoding="utf-8").read().lstrip().startswith("{")
 
 

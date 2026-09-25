@@ -31,6 +31,12 @@ in System Settings > Privacy & Security. For Read Text: `brew install tesseract`
 * **Web dashboard:** Settings > Phone remote control > Web page on your Wi-Fi. Open the shown address in your
   phone's browser on the same network, enter the PIN, and see what's running, pause/stop it, start allowed
   scripts, view the screen and recent runs. Only local-network devices can connect; wrong PINs lock out.
+* **Smoother everywhere:** mouse wheel scrolling glides, selecting a step glides it into view, the Chart and
+  Flow panels slide open, chart boxes glide to their new places after a move, dialogs rise in and sink away,
+  buttons blend between states, and changing the wallpaper cross-fades. **Reduce motion** (drop icon)
+  still turns it all off. Scripts running fast no longer make the toolbars stutter, and resizing is lighter.
+* **Smaller app:** unused parts of Qt, OpenCV's video support and the Pillow library are left out, and the
+  fonts are trimmed. Read Text calls Tesseract directly.
 
 ## What's new in 2.9
 **New steps**
@@ -146,7 +152,7 @@ click **Run in: Whole screen** and pick the window (from the list, or by clickin
 
 ## What's new in 2.3: the Liquid Glass look
 Clicker now opens in a new **Liquid Glass** interface built with Qt, following Apple's iOS 26 Liquid Glass kit
-(the values are in `assets/liquid_glass_tokens.json`): frosted glass panels over a wallpaper, lit from the top
+: frosted glass panels over a wallpaper, lit from the top
 left, with pill buttons, a tab lens that glides, iOS style switches and glass notices.
 
 * **Wallpapers:** the drop icon (top right) picks Aurora (the kit's gradient), Dusk, Deep Ocean, Mist or

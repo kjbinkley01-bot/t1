@@ -1,6 +1,6 @@
 """Glass controls: buttons, segmented tabs, switches, fields and the step table styling."""
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QHBoxLayout, QLabel, QSizePolicy,
                                QWidget)
@@ -49,7 +49,7 @@ class GlassButton(QAbstractButton):
         self.update()
 
     def changeEvent(self, e):
-        if e.type() == e.Type.EnabledChange:
+        if e.type() == QEvent.Type.EnabledChange:
             target = 1.0 if self.isEnabled() else 0.55
             if self.isVisible():
                 animate(self, self._dim, target, glass.FAST, self._set_dim, attr="_danim")

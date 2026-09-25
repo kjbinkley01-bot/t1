@@ -368,7 +368,7 @@ class FlowChart(QGraphicsView):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
             f = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
             self._zoom_to = max(0.4, min(2.0, self._zoom_to * f))
-            glass.animate(self, self.zoom, self._zoom_to, glass.FAST + 30, self._set_zoom, attr="_zanim")
+            glass.animate(self, self.zoom, self._zoom_to, glass.FAST, self._set_zoom, attr="_zanim")
         else:
             super().wheelEvent(e)
 
