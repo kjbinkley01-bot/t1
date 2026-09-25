@@ -4,7 +4,7 @@ import copy
 import re
 
 APP_NAME = "Clicker"
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
 
 ACTION_GROUPS = [
     ("Mouse", [

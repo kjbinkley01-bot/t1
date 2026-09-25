@@ -1,8 +1,11 @@
 """Macro recording, playback with variation, and conversion to action steps."""
 
+import queue
 import random
 import threading
 import time
+
+import cv2
 
 try:
     from pynput import keyboard, mouse
@@ -53,6 +56,37 @@ def key_text(ev):
     return f"vk{vk}" if vk is not None else ""
 
 
+PATCH_SIZES = [(48, 32), (72, 48), (110, 70), (160, 100), (240, 150)]
+UNIQUE_CONF = 0.93
+MIN_TEXTURE = 6.0
+SNAP_EVERY_S = 0.5
+SNAP_WIDTH = 480
+
+
+def pick_patch(screen, x, y):
+    """The smallest picture around (x, y) that shows only once on the screen.
+
+    screen: the whole screen (BGR); x, y: the click inside it. Returns (patch, (dx, dy)) where dx, dy is
+    the click's offset from the patch center, or None when no size is both textured and unique (plain
+    backgrounds, repeated icons): those clicks stay as positions.
+    """
+    from . import vision
+    h, w = screen.shape[:2]
+    if not (0 <= x < w and 0 <= y < h):
+        return None
+    for pw, ph in PATCH_SIZES:
+        if pw > w or ph > h:
+            break
+        x0 = min(max(0, x - pw // 2), w - pw)
+        y0 = min(max(0, y - ph // 2), h - ph)
+        patch = screen[y0:y0 + ph, x0:x0 + pw]
+        if float(patch.reshape(-1, 3).std(axis=0).max()) < MIN_TEXTURE:
+            continue
+        if len(vision.match_all_in(screen, patch, UNIQUE_CONF, limit=2)) == 1:
+            return patch.copy(), (x - (x0 + pw // 2), y - (y0 + ph // 2))
+    return None
+
+
 class Recorder:
     def __init__(self, is_hotkey):
         self.is_hotkey = is_hotkey
@@ -62,19 +96,38 @@ class Recorder:
         self._ml = None
         self._kl = None
         self.started = 0.0
+        self.images = {}   # name -> BGR picture taken at a click
+        self.snaps = {}    # name -> JPEG bytes of the screen (when snapshots are on)
 
     @property
     def count(self):
-        return len(self.events)
+        return sum(1 for e in self.events if e["type"] != "snap")
 
-    def start(self, clicks=True, moves=True, keys=True, move_interval=0.02):
+    def start(self, clicks=True, moves=True, keys=True, move_interval=0.02, pictures=True, snapshots=False,
+              capture=None):
+        """pictures: save a unique picture around each click. snapshots: a small screenshot every 0.5 s.
+        capture: optional function(region or None) -> (BGR image, (ox, oy)); defaults to the screen."""
         if self.active:
             return
         self.events = []
-        self.opts = {"clicks": clicks, "moves": moves, "keys": keys}
+        self.images, self.snaps = {}, {}
+        self.opts = {"clicks": clicks, "moves": moves, "keys": keys, "pictures": pictures and clicks,
+                     "snapshots": snapshots}
+        self._capture = capture
         self._move_interval = move_interval
         self._last_move = -1.0
         self.started = time.monotonic()
+        self._jobs = queue.Queue()
+        self._stop = threading.Event()
+        self._workers = []
+        if self.opts["pictures"]:
+            t = threading.Thread(target=self._picture_worker, daemon=True)
+            t.start()
+            self._workers.append(t)
+        if snapshots:
+            t = threading.Thread(target=self._snap_worker, daemon=True)
+            t.start()
+            self._workers.append(t)
         self._ml = mouse.Listener(on_move=self._on_move, on_click=self._on_click, on_scroll=self._on_scroll)
         self._kl = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._ml.start()
@@ -94,11 +147,67 @@ class Recorder:
             self._last_move = t
             self._add({"type": "move", "x": int(x), "y": int(y)})
 
+    def _grab(self, region=None):
+        if self._capture is not None:
+            return self._capture(region)
+        from . import vision
+        return vision.capture(region)
+
     def _on_click(self, x, y, button, pressed, injected=False):
         if injected or not self.opts["clicks"]:
             return
-        self._add({"type": "mouse_down" if pressed else "mouse_up",
-                   "x": int(x), "y": int(y), "button": button.name})
+        ev = {"type": "mouse_down" if pressed else "mouse_up", "x": int(x), "y": int(y), "button": button.name}
+        self._add(ev)
+        if pressed and self.opts.get("pictures"):
+            # grab now, before the app reacts to the click; picking the picture happens on a worker
+            try:
+                img, origin = self._grab(None)
+                self._jobs.put((ev, img, origin))
+            except Exception:
+                pass
+
+    def _picture_worker(self):
+        from . import vision
+        n = 0
+        try:
+            while not (self._stop.is_set() and self._jobs.empty()):
+                try:
+                    ev, img, (ox, oy) = self._jobs.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                try:
+                    hit = pick_patch(img, ev["x"] - ox, ev["y"] - oy)
+                except Exception:
+                    hit = None
+                if hit is not None:
+                    n += 1
+                    name = f"click_{n:03d}.png"
+                    self.images[name] = hit[0]
+                    ev["img"] = name
+                    ev["img_off"] = [int(hit[1][0]), int(hit[1][1])]
+        finally:
+            vision.release_thread()
+
+    def _snap_worker(self):
+        from . import vision
+        n = 0
+        try:
+            while not self._stop.wait(SNAP_EVERY_S if n else 0.05):
+                try:
+                    img, _o = self._grab(None)
+                    h, w = img.shape[:2]
+                    k = SNAP_WIDTH / float(w)
+                    small = cv2.resize(img, (SNAP_WIDTH, max(1, int(h * k))), interpolation=cv2.INTER_AREA)
+                    ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                except Exception:
+                    continue
+                if ok:
+                    n += 1
+                    name = f"snap_{n:04d}.jpg"
+                    self.snaps[name] = buf.tobytes()
+                    self._add({"type": "snap", "snap": name})
+        finally:
+            vision.release_thread()
 
     def _on_scroll(self, x, y, dx, dy, injected=False):
         if injected or not self.opts["clicks"]:
@@ -121,14 +230,21 @@ class Recorder:
         self.active = False
         self._ml.stop()
         self._kl.stop()
+        self._stop.set()
+        for t in self._workers:
+            t.join(5)
         with self._lock:
             events = sorted(self.events, key=lambda e: e["t"])
         if trim_last_click:
             downs = [i for i, e in enumerate(events) if e["type"] == "mouse_down"]
-            if downs and all(e["type"] in ("move", "mouse_up") for e in events[downs[-1] + 1:]):
+            if downs and all(e["type"] in ("move", "mouse_up", "snap") for e in events[downs[-1] + 1:]):
                 events = events[:downs[-1]]
-        while events and events[-1]["type"] == "move":
+        while events and events[-1]["type"] in ("move", "snap"):
             events.pop()
+        used = {e.get("img") for e in events}
+        self.images = {k: v for k, v in self.images.items() if k in used}
+        used = {e.get("snap") for e in events}
+        self.snaps = {k: v for k, v in self.snaps.items() if k in used}
         # drop key releases whose press happened before recording started
         down = set()
         cleaned = []
@@ -181,7 +297,7 @@ class Player(Job):
     def __init__(self, events, emit, repeat=1, speed_min=100, speed_max=100,
                  dx_min=0, dx_max=0, dy_min=0, dy_max=0, whole=True,
                  gap_min=0.0, gap_max=0.0, settle=False, start_delay=0.0,
-                 target=None, recorded_in=None, target_backend=None):
+                 target=None, recorded_in=None, target_backend=None, images=None, follow=False):
         """target: play inside this window (background mode). recorded_in: the window the recording's
         positions are measured from (None = the screen). Positions are converted between the two."""
         super().__init__(emit)
@@ -190,6 +306,10 @@ class Player(Job):
         self.backend = target_backend
         self.io = None if self.target is None else WindowIO(self.target, backend=target_backend)
         self.offset = (0, 0)
+        self.images = images or {}   # click pictures by name (for follow)
+        self.follow = bool(follow)   # find each click's picture and click where it is now
+        self._fshift = (0, 0)
+        self._fbutton = None
         self.events = list(events)
         self.repeat = max(0, int(repeat))
         self.speed = (max(1.0, float(speed_min)), max(1.0, float(speed_max)))
@@ -268,6 +388,39 @@ class Player(Job):
             ox, oy = WindowIO(self.recorded_in, backend=self.backend).client_origin()
             self.offset = (ox, oy)
 
+    def _locate(self, ev, x, y):
+        """Where the click's picture is now: its expected position, else anywhere. None if not found."""
+        img = self.images.get(ev.get("img"))
+        if img is None:
+            return None
+        dx, dy = (ev.get("img_off") or [0, 0])[:2]
+        for region in ([x - 320, y - 220, 640, 440], None):
+            try:
+                m = vision.find_image(img, region, 0.85)
+            except Exception:
+                m = None
+            if m is not None:
+                cx, cy = m.center
+                return cx + dx, cy + dy
+        return None
+
+    def _follow(self, ev, dx, dy):
+        """Shift for this event: a press finds its picture; the shift lasts until the button is released."""
+        t = ev["type"]
+        if t == "mouse_down" and ev.get("img"):
+            x, y = ev["x"] + dx, ev["y"] + dy
+            hit = self._locate(ev, x, y)
+            if hit is None:
+                self.emit("log", f"Picture for the click at {x}, {y} not found; clicking the recorded spot")
+                self._fshift = (0, 0)
+            else:
+                self._fshift = (hit[0] - x, hit[1] - y)
+            self._fbutton = ev.get("button")
+        fx, fy = self._fshift
+        if t == "mouse_up" and ev.get("button") == self._fbutton:
+            self._fshift, self._fbutton = (0, 0), None
+        return fx, fy
+
     def _settle(self, x, y):
         cond = {"kind": "region_stable", "region": [int(x) - 100, int(y) - 100, 200, 200], "stable_ms": 300}
         checker = vision.Checker(cond, lambda n: None)
@@ -308,7 +461,8 @@ class Player(Job):
                         t0 = time.monotonic()
                         self._settle(ev["x"] + dx + ox, ev["y"] + dy + oy)
                         shift += time.monotonic() - t0
-                    self._play(ev, int(round(dx)) + ox, int(round(dy)) + oy)
+                    fx, fy = self._follow(ev, int(round(dx)) + ox, int(round(dy)) + oy) if self.follow else (0, 0)
+                    self._play(ev, int(round(dx)) + ox + fx, int(round(dy)) + oy + fy)
                 if self.repeat == 0 or run < self.repeat:
                     self.sleep(self._rand(self.gap))
             ok = True
@@ -342,7 +496,21 @@ _CLICK_NAMES = {
 }
 
 
-def recording_to_steps(events):
+def _image_click(pending, btn, delay):
+    """A Click Image step for a click that has a unique picture, else None."""
+    if not pending.get("img") or btn not in ("left", "right", "middle"):
+        return None
+    st = model.new_step("Click Image")
+    dx, dy = (pending.get("img_off") or [0, 0])[:2]
+    st.update(image=pending["img"], x=int(dx) or None, y=int(dy) or None, button=btn,
+              timeout_s=10, confidence=0.9, region=None, delay_ms=delay,
+              comment=f"recorded at {pending['x']}, {pending['y']}")
+    return st
+
+
+def recording_to_steps(events, use_pictures=True):
+    """Turn a recording into Action Script steps. Clicks that have a unique picture become Click Image
+    steps (they keep working when the window moves); the rest click their recorded position."""
     steps = []
     last_t = 0.0
     pending = None
@@ -366,13 +534,21 @@ def recording_to_steps(events):
             dist = max(abs(ev["x"] - pending["x"]), abs(ev["y"] - pending["y"]))
             btn = ev.get("button", "left")
             if dist <= 6:
-                if (last_click and btn == "left" and not mods
-                        and pending["t"] - last_click[1] < 0.45
-                        and max(abs(pending["x"] - last_click[2]), abs(pending["y"] - last_click[3])) <= 6
-                        and last_click[0]["action"] in ("Left Click", "Double Click")):
-                    st = last_click[0]
+                prev = last_click[0] if last_click else None
+                quick = (last_click and btn == "left" and not mods and pending["t"] - last_click[1] < 0.45
+                         and max(abs(pending["x"] - last_click[2]), abs(pending["y"] - last_click[3])) <= 6)
+                if quick and prev["action"] in ("Left Click", "Double Click"):
+                    st = prev
                     st["action"] = "Double Click" if st["action"] == "Left Click" else "Triple Click"
                     last_t = ev["t"]
+                    last_click = (st, ev["t"], ev["x"], ev["y"])
+                elif quick and prev["action"] == "Click Image" and prev.get("button") == "left":
+                    prev["button"] = "double"
+                    last_t = ev["t"]
+                    last_click = (prev, ev["t"], ev["x"], ev["y"])
+                elif use_pictures and not mods and pending.get("img") and btn in ("left", "right", "middle"):
+                    st = _image_click(pending, btn, delay_from(pending["t"]))
+                    add(st, ev["t"])
                     last_click = (st, ev["t"], ev["x"], ev["y"])
                 else:
                     key = (btn, tuple(sorted(m for m in mods if m != "win")))

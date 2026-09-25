@@ -13,6 +13,7 @@ from .glass import GlassPanel, font
 from .widgets import Caption, GlassButton, mode_of
 
 LANES = [("Clicks", 52), ("Movement", 44), ("Keys", 44)]
+SCREEN_LANE = ("Screen", 54)
 RULER_H = 24
 HANDLE = QColor("#ffd60a")
 SEL = QColor(255, 90, 100)
@@ -29,6 +30,7 @@ class Timeline(QWidget):
 
     selection_changed = Signal()
     trimmed = Signal(float, float)
+    hovered = Signal(float)
 
     def __init__(self):
         super().__init__()
@@ -40,8 +42,28 @@ class Timeline(QWidget):
         self._drag = None        # "sel" | "start" | "end"
         self._anchor = 0.0
         self.fit_width = 900
+        self.snaps = {}
+        self._pm = {}
         self.setMouseTracking(True)
         self.setMinimumHeight(RULER_H + sum(h for _n, h in LANES) + 8)
+
+    @property
+    def lanes(self):
+        has = any(e["type"] == "snap" for e in self.events)
+        return ([SCREEN_LANE] if has else []) + LANES
+
+    def snap_pixmap(self, name, h):
+        from PySide6.QtGui import QPixmap
+        key = (name, h)
+        pm = self._pm.get(key)
+        if pm is None and name in self.snaps:
+            pm = QPixmap()
+            pm.loadFromData(self.snaps[name], "JPG")
+            pm = pm.scaledToHeight(h, Qt.TransformationMode.SmoothTransformation)
+            if len(self._pm) > 600:
+                self._pm.clear()
+            self._pm[key] = pm
+        return pm
 
     # ------------------------------------------------------------ geometry
 
@@ -68,10 +90,14 @@ class Timeline(QWidget):
         self.updateGeometry()
         self.update()
 
-    def set_events(self, events):
+    def set_events(self, events, snaps=None):
         self.events = events
+        if snaps is not None and snaps is not self.snaps:
+            self.snaps = snaps
+            self._pm = {}
         self.sel = None
         self.trim = None
+        self.setMinimumHeight(RULER_H + sum(h for _n, h in self.lanes) + 8)
         self.relayout()
 
     # ------------------------------------------------------------ mouse
@@ -99,6 +125,7 @@ class Timeline(QWidget):
 
     def mouseMoveEvent(self, ev):
         x = ev.position().x()
+        self.hovered.emit(self.t_of(x))
         if self._drag is None:
             hs, he = self._handles()
             near = self.events and (abs(x - hs) <= 7 or abs(x - he) <= 7)
@@ -148,7 +175,7 @@ class Timeline(QWidget):
             t += step
         y = RULER_H
         lane_y = {}
-        for name, lh in LANES:
+        for name, lh in self.lanes:
             lane_y[name] = (y, lh)
             p.setPen(m.line)
             p.drawLine(QPointF(0, y), QPointF(w, y))
@@ -173,6 +200,21 @@ class Timeline(QWidget):
                 p.drawRoundedRect(box, 9, 9)
                 p.setPen(m.text)
                 p.drawText(box, Qt.AlignmentFlag.AlignCenter, lab)
+        # screen snapshots as a film strip, one frame wherever it fits
+        if "Screen" in lane_y:
+            sy, sh = lane_y["Screen"]
+            last_right = -1e9
+            for ev in self.events:
+                if ev["type"] != "snap" or ev["t"] < t0 - 5 or ev["t"] > t1:
+                    continue
+                x = self.x_of(ev["t"])
+                if x < last_right + 2:
+                    continue
+                pm = self.snap_pixmap(ev.get("snap"), sh - 8)
+                if pm is None:
+                    continue
+                p.drawPixmap(int(x), int(sy + 4), pm)
+                last_right = x + pm.width()
         # movement: the cursor's height over time, as a thin line
         cy, ch = lane_y["Movement"]
         moves = [ev for ev in self.events if ev["type"] in ("move", "mouse_down", "mouse_up", "scroll")
@@ -327,19 +369,15 @@ class RecordingEditor(GlassPanel):
         box.setSpacing(0)
         labels = QWidget()
         labels.setFixedWidth(84)
-        ll = QVBoxLayout(labels)
-        ll.setContentsMargins(0, RULER_H, 0, 0)
-        ll.setSpacing(0)
-        for name, lh in LANES:
-            lab = QLabel(name)
-            lab.setProperty("role", "detail")
-            lab.setFixedHeight(lh)
-            ll.addWidget(lab)
-        ll.addStretch(1)
+        self.lane_box = QVBoxLayout(labels)
+        self.lane_box.setContentsMargins(0, RULER_H, 0, 0)
+        self.lane_box.setSpacing(0)
+        self._lane_names = None
         box.addWidget(labels)
         self.timeline = Timeline()
         self.timeline.selection_changed.connect(self._on_selection)
         self.timeline.trimmed.connect(self._on_trim)
+        self.timeline.hovered.connect(self._preview_at)
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.timeline)
         self.scroll.setWidgetResizable(True)
@@ -385,7 +423,7 @@ class RecordingEditor(GlassPanel):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Time", "Event", "Where / key"])
         self.tree.setRootIsDecorated(False)
-        self.tree.setFixedHeight(150)
+        self.tree.setMinimumHeight(150)
         self.tree.setColumnWidth(0, 80)
         self.tree.setColumnWidth(1, 130)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -406,6 +444,12 @@ class RecordingEditor(GlassPanel):
         b = GlassButton("Apply trim", small=True)
         b.clicked.connect(self._apply_trim_fields)
         trim.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
+        self.preview = QLabel()
+        self.preview.setFixedSize(250, 141)
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setStyleSheet("background: rgba(0,0,0,70); border-radius: 10px;")
+        self.preview.hide()
+        trim.addWidget(self.preview)
         tip = QLabel("Edits change the recording in Clicker; the file only changes when you Save.")
         tip.setProperty("role", "detail")
         tip.setWordWrap(True)
@@ -425,9 +469,46 @@ class RecordingEditor(GlassPanel):
         self._show(events)
 
     def _show(self, events):
-        self.timeline.set_events(events)
+        self.timeline.set_events(events, self.tab.snaps)
+        names = [n for n, _h in self.timeline.lanes]
+        if names != self._lane_names:
+            self._lane_names = names
+            while self.lane_box.count():
+                it = self.lane_box.takeAt(0)
+                if it.widget() is not None:
+                    it.widget().deleteLater()
+            for name, lh in self.timeline.lanes:
+                lab = QLabel(name)
+                lab.setProperty("role", "detail")
+                lab.setFixedHeight(lh)
+                self.lane_box.addWidget(lab)
+            self.lane_box.addStretch(1)
+            self.scroll.setFixedHeight(self.timeline.minimumHeight() + 16)
+        self.preview.setVisible("Screen" in names)
+        if "Screen" in names:
+            self._preview_at(0.0)
         self.timeline.relayout(max(300, self.scroll.viewport().width()))
         self._refresh()
+
+    def _preview_at(self, t):
+        """Show the snapshot taken at (or just before) time t."""
+        if not self.preview.isVisible():
+            return
+        best = None
+        for e in self.tab.events:
+            if e["type"] == "snap":
+                if e["t"] <= t or best is None:
+                    best = e
+                if e["t"] > t:
+                    break
+        if best is None:
+            return
+        pm = self.timeline.snap_pixmap(best.get("snap"), 141)
+        if pm is not None:
+            if pm.width() > 250:
+                pm = pm.scaledToWidth(250, Qt.TransformationMode.SmoothTransformation)
+            self.preview.setPixmap(pm)
+            self.preview.setToolTip(f"Screen at {fmt_t(best['t'])}")
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -439,7 +520,7 @@ class RecordingEditor(GlassPanel):
 
     def _refresh(self):
         ev = self.tab.events
-        n = len(ev)
+        n = sum(1 for e in ev if e["type"] != "snap")
         now = recedit.length(ev)
         text = f"{n} events · {fmt_t(now)}"
         if self.undo_stack and abs(now - self.original_len) > 0.05:
@@ -482,16 +563,17 @@ class RecordingEditor(GlassPanel):
         ev = self.tab.events
         if sel:
             i, j = recedit.select(ev, *sel)
-            self.lbl_sel.setText(f"Selected {fmt_t(sel[0])} – {fmt_t(sel[1])} · {j - i} events")
-            self.lbl_sel.setProperty("role", "error" if j - i else "detail")
             items = ev[i:j]
+            n = sum(1 for e in items if e["type"] != "snap")
+            self.lbl_sel.setText(f"Selected {fmt_t(sel[0])} – {fmt_t(sel[1])} · {n} events")
+            self.lbl_sel.setProperty("role", "error" if n else "detail")
         else:
             self.lbl_sel.setText("Drag across the timeline to select. Drag the yellow handles to trim the ends.")
             self.lbl_sel.setProperty("role", "detail")
             items = ev
         self.lbl_sel.style().unpolish(self.lbl_sel)
         self.lbl_sel.style().polish(self.lbl_sel)
-        shown = [e for e in items if e["type"] != "move"][:300]
+        shown = [e for e in items if e["type"] not in ("move", "snap")][:300]
         for e in shown:
             kind, where = recedit.describe(e)
             self.tree.addTopLevelItem(QTreeWidgetItem([fmt_t(e["t"]), kind, where]))

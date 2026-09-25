@@ -53,6 +53,7 @@ class RecorderTab(QWidget):
         self.main = main
         self.recorder = Recorder(main.hotkeys.is_hotkey)
         self.events = []
+        self.images, self.snaps = {}, {}   # click pictures and screen snapshots of this recording
         self.path = None
         self.dirty = False
         self.recorded_in = None   # the window this recording's positions are measured from (None = screen)
@@ -131,8 +132,14 @@ class RecorderTab(QWidget):
         self.sw_clicks = GlassSwitch("Record mouse clicks and scrolls")
         self.sw_moves = GlassSwitch("Record mouse movement")
         self.sw_keys = GlassSwitch("Record keyboard")
-        for sw, key in ((self.sw_clicks, "clicks"), (self.sw_moves, "moves"), (self.sw_keys, "keys")):
-            sw.setChecked(bool(o.get(key, True)))
+        self.sw_pics = GlassSwitch("Save a picture at each click")
+        self.sw_pics.setToolTip("Lets Convert make Click Image steps, and playback find clicks that moved")
+        self.sw_snaps = GlassSwitch("Screen snapshots for the timeline")
+        self.sw_snaps.setToolTip("A small screenshot every half second, shown on the timeline (about 4 MB a minute)")
+        for sw, key, default in ((self.sw_clicks, "clicks", True), (self.sw_moves, "moves", True),
+                                 (self.sw_keys, "keys", True), (self.sw_pics, "pictures", True),
+                                 (self.sw_snaps, "snapshots", False)):
+            sw.setChecked(bool(o.get(key, default)))
             opts.addWidget(sw)
         g.addLayout(opts, 2, 2)
         for c in range(3):
@@ -193,6 +200,9 @@ class RecorderTab(QWidget):
         self.sw_settle = GlassSwitch("Wait for the screen to settle before each recorded click (max 10 s)")
         self.sw_settle.setChecked(bool(o.get("settle", False)))
         vl.addWidget(self.sw_settle)
+        self.sw_follow = GlassSwitch("Find each click by its picture, so moved windows and buttons still work")
+        self.sw_follow.setChecked(bool(o.get("follow", False)))
+        vl.addWidget(self.sw_follow)
         root.addWidget(p)
 
         tip = detail("Shortcut keys for recording and playback are in Settings (the gear icon).")
@@ -215,6 +225,8 @@ class RecorderTab(QWidget):
             "repeat": int(num(self.e_repeat, "Repeat", 0)),
             "clicks": self.sw_clicks.isChecked(), "moves": self.sw_moves.isChecked(),
             "keys": self.sw_keys.isChecked(),
+            "pictures": self.sw_pics.isChecked(), "snapshots": self.sw_snaps.isChecked(),
+            "follow": self.sw_follow.isChecked(),
             "speed_min": num(self.e_smin, "Speed", 1), "speed_max": num(self.e_smax, "Speed", 1),
             "gap_min": num(self.e_gmin, "Delay", 0), "gap_max": num(self.e_gmax, "Delay", 0),
             "gap_unit": self.cb_gunit.currentText(),
@@ -253,7 +265,7 @@ class RecorderTab(QWidget):
             self.st_len.value.setText(f"{secs // 60:02d}:{secs % 60:02d}")
 
     def _show_counts(self):
-        self.st_events.value.setText(str(len(self.events)))
+        self.st_events.value.setText(str(sum(1 for e in self.events if e["type"] != "snap")))
         secs = int(self.events[-1]["t"]) if self.events else 0
         self.st_len.value.setText(f"{secs // 60:02d}:{secs % 60:02d}")
 
@@ -281,7 +293,8 @@ class RecorderTab(QWidget):
         job = Player(events, self.main.emitter("recording"), repeat=1,
                      speed_min=o["speed_min"], speed_max=o["speed_max"], settle=o["settle"],
                      start_delay=0.5 if self.btn_runin.target else 2.0,
-                     target=self.btn_runin.target, recorded_in=self.recorded_in)
+                     target=self.btn_runin.target, recorded_in=self.recorded_in,
+                     images=self.images, follow=o["follow"])
         if self.main.start_job(job, self):
             self._note(note + ("" if self.btn_runin.target else ". Starting in 2 s."))
 
@@ -327,7 +340,8 @@ class RecorderTab(QWidget):
             except Exception as e:
                 self.main.set_status(f"{e}. Open it or choose Whole screen.", error=True)
                 return
-        self.recorder.start(clicks=o["clicks"], moves=o["moves"], keys=o["keys"])
+        self.recorder.start(clicks=o["clicks"], moves=o["moves"], keys=o["keys"], pictures=o["pictures"],
+                            snapshots=o["snapshots"])
         self._note("Recording" + (f" in {target.describe(t)}" if t else "") + ". Press the record hotkey to stop.",
                    "error")
         self.main.set_status("Recording")
@@ -337,6 +351,7 @@ class RecorderTab(QWidget):
         if not self.recorder.active:
             return
         self.events = self.recorder.stop(trim_last_click=not from_hotkey)
+        self.images, self.snaps = dict(self.recorder.images), dict(self.recorder.snaps)
         dropped = 0
         self.recorded_in = None
         if self._rec_window:
@@ -377,7 +392,8 @@ class RecorderTab(QWidget):
                      whole=o["dx_whole"] and o["dy_whole"],
                      gap_min=o["gap_min"] * mult, gap_max=o["gap_max"] * mult,
                      settle=o["settle"], start_delay=0.5 if self.btn_runin.target else 2.0,
-                     target=self.btn_runin.target, recorded_in=self.recorded_in)
+                     target=self.btn_runin.target, recorded_in=self.recorded_in,
+                     images=self.images, follow=o["follow"])
         self.main.start_job(job, self)
 
     def on_job(self, kind, payload):
@@ -396,6 +412,7 @@ class RecorderTab(QWidget):
                 != QMessageBox.StandardButton.Yes:
             return
         self.events, self.path, self.dirty, self.recorded_in = [], None, False, None
+        self.images, self.snaps = {}, {}
         self._show_counts()
         self.editor.load(self.events)
         self._note(self._where_note())
@@ -408,11 +425,12 @@ class RecorderTab(QWidget):
         if not path:
             return
         try:
-            events, options = storage.load_recording(path)
+            events, options, images, snaps = storage.load_recording_full(path)
         except Exception as e:
             QMessageBox.warning(self, "Could not open recording", str(e))
             return
         self.events, self.path, self.dirty = events, path, False
+        self.images, self.snaps = images, snaps
         self.recorded_in = target.normalize(options.get("recorded_in"))
         if self.recorded_in:  # it was made in a window: play it there unless the user picks otherwise
             self.btn_runin.set_target(self.recorded_in)
@@ -432,7 +450,11 @@ class RecorderTab(QWidget):
             if not path:
                 return
         try:
-            storage.save_recording(path, self.events, dict(self._read_options(), recorded_in=self.recorded_in))
+            used_i = {e.get("img") for e in self.events}
+            used_s = {e.get("snap") for e in self.events}
+            storage.save_recording(path, self.events, dict(self._read_options(), recorded_in=self.recorded_in),
+                                   {k: v for k, v in self.images.items() if k in used_i},
+                                   {k: v for k, v in self.snaps.items() if k in used_s})
         except Exception as e:
             QMessageBox.warning(self, "Could not save", str(e))
             return
@@ -444,7 +466,7 @@ class RecorderTab(QWidget):
         if not self.events:
             self.main.set_status("Record something first.", error=True)
             return
-        steps = recording_to_steps(self.events)
+        steps = recording_to_steps(self.events, use_pictures=bool(self.images))
         if not steps:
             self.main.set_status("The recording has no clicks or keys to convert.", error=True)
             return
@@ -456,6 +478,13 @@ class RecorderTab(QWidget):
         script["screen"] = vision.display_info()
         if self.recorded_in:  # the positions are the window's, so the script runs in that window
             script["settings"]["target"] = dict(self.recorded_in)
-        tab.set_script(script, AssetStore())
+        assets = AssetStore()
+        for st in steps:
+            name = st.get("image")
+            if name and name in self.images:
+                assets.put_image(name, self.images[name])
+        tab.set_script(script, assets)
         self.main.show_tab("actions")
-        self.main.set_status(f"Converted {len(self.events)} events into {len(steps)} steps")
+        pics = sum(1 for st in steps if st["action"] == "Click Image")
+        self.main.set_status(f"Converted {len(self.events)} events into {len(steps)} steps"
+                             + (f" ({pics} click{'s find' if pics != 1 else ' finds'} its picture)" if pics else ""))

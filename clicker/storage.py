@@ -171,16 +171,59 @@ def save_script(path, script, assets):
 
 # ---------------------------------------------------------------- recordings
 
-def save_recording(path, events, options):
-    data = {"format": "clicker-recording", "version": 2, "options": options, "events": events,
-            "length_seconds": events[-1]["t"] if events else 0}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=1)
+def save_recording(path, events, options, images=None, snaps=None):
+    """A plain JSON file, or a zip (recording.json + images/ + snaps/) when it has click pictures or
+    screen snapshots. images: {name: BGR image or PNG bytes}; snaps: {name: JPEG bytes}."""
+    data = {"format": "clicker-recording", "version": 3 if (images or snaps) else 2, "options": options,
+            "events": events, "length_seconds": events[-1]["t"] if events else 0}
+    if not images and not snaps:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+        return
+    folder = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=folder)
+    os.close(fd)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("recording.json", json.dumps(data, indent=1))
+            for name, img in (images or {}).items():
+                z.writestr(f"images/{name}", img if isinstance(img, bytes) else vision.encode_png(img))
+            for name, jpg in (snaps or {}).items():
+                z.writestr(f"snaps/{name}", jpg, compress_type=zipfile.ZIP_STORED)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def load_recording_full(path):
+    """(events, options, images {name: BGR}, snaps {name: JPEG bytes})."""
+    images, snaps = {}, {}
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as z:
+            data = json.loads(z.read("recording.json").decode("utf-8-sig"))
+            for n in z.namelist():
+                base = n.split("/", 1)[-1]
+                if n.startswith("images/") and base:
+                    try:
+                        images[base] = vision.decode_png(z.read(n))
+                    except ValueError:
+                        pass
+                elif n.startswith("snaps/") and base:
+                    snaps[base] = z.read(n)
+    else:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    events, options = _check_recording(data)
+    return events, options, images, snaps
 
 
 def load_recording(path):
-    with open(path, "r", encoding="utf-8-sig") as f:
-        data = json.load(f)
+    events, options, _i, _s = load_recording_full(path)
+    return events, options
+
+
+def _check_recording(data):
     events = data.get("events") if isinstance(data, dict) else None
     if not isinstance(events, list):
         raise ValueError("Not a recording file")

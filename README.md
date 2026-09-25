@@ -19,6 +19,18 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.8
+* **Pictures at clicks** (Macro Recorder, on by default): at each mouse press Clicker saves the smallest
+  picture around the cursor that shows only once on screen (plain backgrounds and repeated icons get none).
+  **Convert to Action Script** turns those clicks into **Click Image** steps, so the script still works when
+  the window or button moves; clicks without a unique picture stay as positions.
+* **Find each click by its picture** (Playback variation, off by default): playback looks for each click's
+  picture near where it was, then anywhere, and clicks where it is now.
+* **Screen snapshots** (off by default): a small screenshot every half second while recording, shown as a film
+  strip on the timeline with a preview that follows your mouse (about 4 MB a minute).
+* Recordings with pictures or snapshots save as a package (a zip inside the `.clkrec`); older files still open.
+* The **Classic look is gone**: Liquid Glass is the only interface, which keeps new features coming faster.
+
 ## What's new in 2.7
 * **Edit recordings** (Macro Recorder): a timeline under Record/Play shows clicks, drags, scrolls, mouse
   movement and keys (combinations like ctrl+s and typed words as one chip). Drag across it to select, then
