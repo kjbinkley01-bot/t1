@@ -1216,6 +1216,18 @@ class ActionTab(QWidget):
         if not want and self.home.isVisible():
             self.home.hide()
 
+    def start_new_step(self, action):
+        """Set up the form for a new step of this type (from the command palette)."""
+        self.main.show_tab("actions")
+        self.cb_action.setCurrentText(action)
+        for e in self.detail_edits.values():
+            if e.isVisible() and e.isEnabled():
+                e.setFocus()
+                break
+        else:
+            self.cb_action.setFocus()
+        self.main.set_status(f"{action}: fill in the fields, then Add (or Insert Above).")
+
     def select_step(self, i):
         """Select step i (0-based), scroll to it and load it into the editor."""
         if 0 <= i < len(self.script["steps"]):

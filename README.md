@@ -25,7 +25,12 @@ in System Settings > Privacy & Security. For Read Text: `brew install tesseract`
   newest first. Star the ones you use most to pin them in **Favorites**, type to search, filter by Scripts,
   Recordings or Favorites, and use **Add folder...** to bring in a whole folder. Right-click a card to run a
   script straight away, show it in its folder, or remove it from the list. **Browse files...** still opens
-  anything else. Backups include your favorites.
+  anything else. Backups include your favorites. A new, empty script shows your favorite and recent scripts
+  over the step list, and every "choose a script" button (hotkeys, schedule, phone remote, Run Script File)
+  picks from the Library.
+* **Command palette (Ctrl+K** or the search icon): type a few letters to run any command, jump to a tab,
+  start a new step of any type, go to a step of the open script, open a Library file, or switch wallpaper.
+  Arrow keys and Enter; letters in order work too ("nsc" finds New script).
 * **If / Else If / Else / End If** and **Try / On Error / End Try** blocks (Blocks group). If checks an image,
   pixel color, variable, text on screen or a window. A step that fails inside Try jumps to On Error (the
   message is in `{error}`) instead of stopping the whole script. Steps inside blocks are indented.

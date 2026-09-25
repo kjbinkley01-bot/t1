@@ -431,6 +431,9 @@ class GlassApp(QMainWindow):
         self.btn_update.clicked.connect(self.open_update)
         self.btn_update.hide()
         top.addWidget(self.btn_update)
+        self.btn_palette = GlassButton("", icon="magnifying-glass", tip="Find a command, step or script (Ctrl+K)")
+        self.btn_palette.clicked.connect(self.open_palette)
+        top.addWidget(self.btn_palette)
         self.btn_style = GlassButton("", icon="drop", tip="Style and wallpaper")
         self.btn_style.clicked.connect(self.show_style_menu)
         top.addWidget(self.btn_style)
@@ -1048,6 +1051,12 @@ class GlassApp(QMainWindow):
         from PySide6.QtGui import QKeySequence, QShortcut
         s = QShortcut(QKeySequence("Ctrl+O"), self)
         s.activated.connect(lambda: self.open_library("recording" if self.current_tab == "recorder" else "script"))
+        s = QShortcut(QKeySequence("Ctrl+K"), self)
+        s.activated.connect(self.open_palette)
+
+    def open_palette(self):
+        from .commandbar import open_palette
+        open_palette(self)
 
     def open_library(self, kind="script"):
         """Show the Library; open what's picked in its own tab (or fall back to a file dialog)."""
