@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from . import inputs, model, runlog, storage, target, vision
+from . import history, inputs, model, runlog, storage, target, vision
 
 
 PROGRESS_MIN_S = 0.15  # shorter pauses would only flicker a progress bar
@@ -221,8 +221,13 @@ class Runner(Job):
 
     def __init__(self, script, assets, emit, inputs_map=None, speed=1.0, repeat=1,
                  random_delay_ms=0, dry_run=False, start_delay=0.0, label="Script",
-                 log_dir=None, save_log=True, target_backend=None):
+                 log_dir=None, save_log=True, target_backend=None, path=None, history_path=None):
         super().__init__(emit)
+        self.path = path
+        # run history goes next to the logs when a log folder is given (tests), else to the data folder
+        self.history_path = history_path or (os.path.join(log_dir, "history.jsonl") if log_dir else None)
+        self.fail_step = None
+        self.started_at = None
         self.script = model.copy_script(script)
         self.assets = assets
         self.values = dict(inputs_map or {})
@@ -357,6 +362,10 @@ class Runner(Job):
             self.run_log = None
 
     def _failed(self, reason):
+        if self.fail_step is None and self.current is not None:
+            steps = self.script["steps"]
+            if 0 <= self.current < len(steps):
+                self.fail_step = (self.current, history.step_title(steps[self.current], self.current))
         self.note(f"FAILED: {reason}")
         if self.run_log:
             self.run_log.screenshot("failure", self.last_region)
@@ -364,6 +373,7 @@ class Runner(Job):
     def _main(self):
         reason = "Finished"
         ok = False
+        self.started_at = time.time()
         self._open_log()
         try:
             self._attach_target()
@@ -414,7 +424,27 @@ class Runner(Job):
             if self.run_log:
                 self.run_log.close()
             self.result = (ok, reason)
+            self._record_history(ok, reason)
             self.emit("done", (ok, reason))
+
+    def _record_history(self, ok, reason):
+        if not self.save_log:
+            return
+        result = "finished" if ok else ("stopped" if reason.startswith("Stop") and self.fail_step is None
+                                        else "failed")
+        step = self.fail_step if result == "failed" else None
+        history.record({
+            "v": 1, "ts": round(self.started_at or time.time(), 3),
+            "script": self.script.get("name") or (os.path.splitext(os.path.basename(self.path))[0]
+                                                  if self.path else self.label),
+            "path": self.path, "result": result, "reason": reason,
+            "seconds": round(time.time() - (self.started_at or time.time()), 2),
+            "passes": self.run_number,
+            "step": step[0] + 1 if step else None, "step_desc": step[1] if step else None,
+            "dry_run": bool(self.dry_run),
+            "window": target.describe(self.target) if self.target else None,
+            "log_dir": self.run_log.dir if self.run_log else None,
+        }, self.history_path)
 
     def _run_steps(self, script, assets, depth):
         fr = _Frame(script, assets, depth)

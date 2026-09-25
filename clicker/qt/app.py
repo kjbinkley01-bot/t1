@@ -23,7 +23,7 @@ from .glass import Backdrop, Mode, font, icon_pixmap, paint_glass
 from .widgets import GlassButton, SegmentedTabs, apply_style
 
 TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"), ("triggers", "Screen Triggers"),
-        ("import", "Import Script")]
+        ("import", "Import Script"), ("history", "History")]
 AUTOSAVE_MS = 60_000
 
 
@@ -321,6 +321,7 @@ class GlassApp(QMainWindow):
 
     def _build(self):
         from .tab_actions import ActionTab
+        from .tab_history import HistoryTab
         from .tab_import import ImportTab
         from .tab_recorder import RecorderTab
         from .tab_triggers import TriggersTab
@@ -363,8 +364,9 @@ class GlassApp(QMainWindow):
         self.recorder_tab = RecorderTab(self)
         self.triggers_tab = TriggersTab(self)
         self.import_tab = ImportTab(self)
+        self.history_tab = HistoryTab(self)
         self.tabs = {"actions": self.action_tab, "recorder": self.recorder_tab,
-                     "triggers": self.triggers_tab, "import": self.import_tab}
+                     "triggers": self.triggers_tab, "import": self.import_tab, "history": self.history_tab}
         self.pages = {}
         for key, _ in TABS:
             # each tab scrolls when the window is shorter than its content (small or scaled screens)
@@ -452,6 +454,8 @@ class GlassApp(QMainWindow):
             return
         old = self.current_tab
         self.current_tab = key
+        if key == "history" and old != key:
+            self.history_tab.reload()
         self.tabbar.select(key)
         page = self.pages[key]
         if not glass.motion_on() or old == key or not self.isVisible():
@@ -722,6 +726,8 @@ class GlassApp(QMainWindow):
                     self.toast.show_msg("Script stopped", reason + more, 9000, accent=glass.RED)
         if owner is not None and hasattr(owner, "on_job"):
             owner.on_job(kind, payload)
+        if kind == "done" and source == "script" and self.current_tab == "history":
+            QTimer.singleShot(200, self.history_tab.reload)
 
     # ------------------------------------------------------------ trigger rules
 
@@ -767,7 +773,7 @@ class GlassApp(QMainWindow):
         job = Runner(script, assets, self.emitter("script"), inputs_map=dict(self.last_inputs),
                      speed=st.get("speed", 1.0), repeat=st.get("repeat", 1),
                      random_delay_ms=st.get("random_delay_ms", 0), label=path,
-                     save_log=self.settings.get("save_run_logs", True))
+                     save_log=self.settings.get("save_run_logs", True), path=path)
         self.start_job(job, self.import_tab)
 
     # ------------------------------------------------------------ hotkeys

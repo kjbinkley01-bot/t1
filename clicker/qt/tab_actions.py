@@ -874,6 +874,12 @@ class ActionTab(QWidget):
         self.lbl_count.setText(f"{n} action{'s' if n != 1 else ''}{where}")
         self.main.update_title()
 
+    def select_step(self, i):
+        """Select step i (0-based), scroll to it and load it into the editor."""
+        if 0 <= i < len(self.script["steps"]):
+            self.refresh_list(select=i)
+            self._on_select()
+
     def mark_running(self, i):
         prev, self.running_row = self.running_row, i
         for idx in (prev, i):
@@ -1156,7 +1162,7 @@ class ActionTab(QWidget):
         return Runner(script, self.assets, self.main.emitter("script"), inputs_map=values,
                       speed=st.get("speed", 1.0), repeat=st.get("repeat", 1),
                       random_delay_ms=st.get("random_delay_ms", 0), dry_run=dry, start_delay=start_delay,
-                      label=label_text, save_log=self.main.settings.get("save_run_logs", True))
+                      label=label_text, save_log=self.main.settings.get("save_run_logs", True), path=self.path)
 
     def toggle_run(self, from_hotkey=False):
         if self.main.job_running_for(self):

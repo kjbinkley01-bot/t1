@@ -444,7 +444,7 @@ class ImportTab(QWidget):
                      speed=st.get("speed", 1.0), repeat=1 if dry else st.get("repeat", 1),
                      random_delay_ms=st.get("random_delay_ms", 0), dry_run=dry, start_delay=2.0,
                      label="Dry run" if dry else "Imported script",
-                     save_log=self.main.settings.get("save_run_logs", True))
+                     save_log=self.main.settings.get("save_run_logs", True), path=self.path)
         self.main.start_job(job, self, hide=not dry and self.main.action_tab.sw_hide.isChecked())
 
     def run_dry(self):
