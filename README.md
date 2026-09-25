@@ -20,6 +20,12 @@ Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitor
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
 ## What's new in 2.10
+* **Library:** Open (or Ctrl+O) now shows your scripts and recordings as cards with a thumbnail (a script's
+  first picture or a recording's first screen snapshot; otherwise a little diagram of its steps or clicks),
+  newest first. Star the ones you use most to pin them in **Favorites**, type to search, filter by Scripts,
+  Recordings or Favorites, and use **Add folder...** to bring in a whole folder. Right-click a card to run a
+  script straight away, show it in its folder, or remove it from the list. **Browse files...** still opens
+  anything else. Backups include your favorites.
 * **If / Else If / Else / End If** and **Try / On Error / End Try** blocks (Blocks group). If checks an image,
   pixel color, variable, text on screen or a window. A step that fails inside Try jumps to On Error (the
   message is in `{error}`) instead of stopping the whole script. Steps inside blocks are indented.

@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter,
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import alerts, clipboard, model, storage, updates, vision
+from .. import alerts, clipboard, library, model, storage, updates, vision
 from . import motion, scripthotkeys
 from ..core import PROGRESS_ONLY, CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
@@ -321,6 +321,8 @@ class GlassApp(QMainWindow):
         super().__init__()
         sys.setswitchinterval(0.001)  # short thread slices keep the window smooth during busy scripts
         self.settings = storage.load_settings()
+        self.library = library.Library()
+        self._fill_library()
         glass.set_motion(not self.settings.get("reduce_motion", False))
         self.wallpaper = self.settings.get("wallpaper", "aurora")
         self.mode = Mode(glass.WALLPAPER_DARK.get(self.wallpaper, True)
@@ -366,6 +368,7 @@ class GlassApp(QMainWindow):
             self.setWindowIcon(QIcon(icon_path))
         self._build()
         self._fit()
+        self._library_shortcut()
 
         self.hotkeys.start()
         self.update_tray()
@@ -1039,6 +1042,51 @@ class GlassApp(QMainWindow):
             self._runs_panel = RunsPanel(self)
         self._runs_panel.open_at(self.btn_runs)
 
+    # ------------------------------------------------------------ library
+
+    def _library_shortcut(self):
+        from PySide6.QtGui import QKeySequence, QShortcut
+        s = QShortcut(QKeySequence("Ctrl+O"), self)
+        s.activated.connect(lambda: self.open_library("recording" if self.current_tab == "recorder" else "script"))
+
+    def open_library(self, kind="script"):
+        """Show the Library; open what's picked in its own tab (or fall back to a file dialog)."""
+        from .library_dialog import LibraryDialog
+        d = LibraryDialog(self, kind)
+        d.exec()
+        if d.browse:
+            (self.recorder_tab if kind == "recording" else self.action_tab).browse()
+        elif d.chosen is not None:
+            e = d.chosen
+            tab_key, tab = ("recorder", self.recorder_tab) if e["kind"] == "recording" else ("actions", self.action_tab)
+            self.show_tab(tab_key)
+            tab.open_from_library(e["path"])
+
+    def remember(self, path, kind, info):
+        """A script or recording was opened or saved: keep it (and a fresh thumbnail) in the Library."""
+        try:
+            self.library.touch(path, kind, info)
+            self._save_library()
+        except Exception as e:  # the Library is a convenience; never block opening or saving
+            self.set_status(f"Could not update the Library: {e}", error=True)
+
+    def _fill_library(self):
+        """Bring the old recent list (and favorites from an imported backup) into the Library, once."""
+        if self.settings.get("library_ready"):
+            return
+        favs = self.settings.pop("library_favorites", None) or []
+        self.library.import_recent((self.settings.get("recent") or []) + favs)
+        for p in favs:
+            self.library.set_favorite(p, True)
+        self._save_library()
+        self.settings["library_ready"] = True
+
+    def _save_library(self):
+        try:
+            self.library.save()
+        except OSError:
+            pass
+
     def run_script_hotkey(self, path, from_menu=False):
         entry = next((e for e in scripthotkeys.entries(self.settings) if e["path"] == path), None)
         name = scripthotkeys.script_name(path)
@@ -1088,6 +1136,7 @@ class GlassApp(QMainWindow):
         self.settings.clear()
         self.settings.update(storage.load_settings())
         self.settings.update(settings)
+        self._fill_library()
         self.save_settings()
         self.hotkeys.bindings = dict(self.settings["hotkeys"])
         self.apply_script_hotkeys()

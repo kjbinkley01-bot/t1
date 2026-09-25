@@ -31,16 +31,21 @@ class GlassButton(QAbstractButton):
         self._old_kind, self._blend = None, 1.0   # cross-fade from the previous style
         self._dim = 1.0                            # 1 enabled, 0.55 disabled, animated between
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFont(font(9.5 if small else 10.5, QFont.Weight.DemiBold if kind in ("primary", "record", "on")
-                          else QFont.Weight.Medium))
+        self._set_font()
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         if tip:
             self.setToolTip(tip)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
 
+    def _set_font(self):
+        bold = self.kind in ("primary", "record", "on")
+        self.setFont(font(9.5 if self.small else 10.5, QFont.Weight.DemiBold if bold else QFont.Weight.Medium))
+
     def set_kind(self, kind):
         if kind != self.kind:
             self._old_kind, self.kind, self._blend = self.kind, kind, 0.0
+            self._set_font()
+            self.updateGeometry()
             animate(self, 0.0, 1.0, glass.BASE, self._set_blend, attr="_kanim",
                     done=lambda: setattr(self, "_old_kind", None))
 

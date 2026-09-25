@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QStyledItemDelegate, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from .. import editing, flow, formlogic, inputs, model, runlog, storage, target, vision
+from .. import editing, flow, formlogic, inputs, library, model, runlog, storage, target, vision
 from ..runner import Runner
 from ..storage import AssetStore
 from . import dialogs, glass, motion
@@ -1421,12 +1421,20 @@ class ActionTab(QWidget):
         self.main.update_title()
 
     def load(self):
+        self.main.open_library("script")
+
+    def browse(self):
         if self.main.job_running_for(self) or not self.confirm_discard("opening another"):
             return
         path, _ = QFileDialog.getOpenFileName(self, "Open script", "",
                                               storage.SCRIPT_FILTER + ";;All files (*)")
         if path:
             self.open_path(path)
+
+    def open_from_library(self, path):
+        if self.main.job_running_for(self) or not self.confirm_discard("opening another"):
+            return
+        self.open_path(path)
 
     def open_path(self, path):
         try:
@@ -1437,6 +1445,7 @@ class ActionTab(QWidget):
         self.set_script(script, assets, path)
         self.dirty = False
         storage.add_recent(self.main.settings, path)
+        self.main.remember(path, "script", library.script_info(script, assets))
         self.main.save_settings()
         self.main.update_title()
 
@@ -1461,6 +1470,7 @@ class ActionTab(QWidget):
             return False
         self.path, self.dirty = path, False
         storage.add_recent(self.main.settings, path)
+        self.main.remember(path, "script", library.script_info(self.script, self.assets))
         self.main.save_settings()
         self.refresh_list(self._selection())
         self.main.set_status(f"Saved {os.path.basename(path)}")

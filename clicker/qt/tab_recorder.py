@@ -8,7 +8,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, \
     QVBoxLayout, QWidget
 
-from .. import model, storage, target, vision
+from .. import library, model, storage, target, vision
 from ..recorder import Player, Recorder, recording_to_steps, to_window
 from ..storage import AssetStore
 from . import dialogs
@@ -405,12 +405,16 @@ class RecorderTab(QWidget):
             ok, reason = payload
             self._note(f"Playback {'finished' if ok else 'stopped'}. {'' if ok else reason}")
 
-    def new(self):
+    def _busy_or_keep(self):
+        """True when the recording can't be replaced now (recording, playing, or unsaved and kept)."""
         if self.recorder.active or self.main.job_running_for(self):
-            return
-        if self.dirty and self.events and QMessageBox.question(
-                self, "Discard recording?", "The current recording is not saved. Discard it?") \
-                != QMessageBox.StandardButton.Yes:
+            return True
+        return bool(self.dirty and self.events and QMessageBox.question(
+            self, "Discard recording?", "The current recording is not saved. Discard it?")
+            != QMessageBox.StandardButton.Yes)
+
+    def new(self):
+        if self._busy_or_keep():
             return
         self.events, self.path, self.dirty, self.recorded_in = [], None, False, None
         self.images, self.snaps = {}, {}
@@ -420,11 +424,20 @@ class RecorderTab(QWidget):
         self.main.update_title()
 
     def open(self):
-        if self.recorder.active or self.main.job_running_for(self):
+        self.main.open_library("recording")
+
+    def browse(self):
+        if self._busy_or_keep():
             return
         path, _ = QFileDialog.getOpenFileName(self, "Open recording", "", "Recordings (*.clkrec *.json);;All files (*)")
-        if not path:
-            return
+        if path:
+            self.open_path(path)
+
+    def open_from_library(self, path):
+        if not self._busy_or_keep():
+            self.open_path(path)
+
+    def open_path(self, path):
         try:
             events, options, images, snaps = storage.load_recording_full(path)
         except Exception as e:
@@ -441,6 +454,7 @@ class RecorderTab(QWidget):
         self._note(f"Opened {os.path.basename(path)}"
                    + (f", recorded in {target.describe(self.recorded_in)}." if self.recorded_in else "."))
         self.main.update_title()
+        self.main.remember(path, "recording", library.recording_info(events, images, snaps))
 
     def save(self, save_as=False):
         if not self.events:
@@ -462,6 +476,7 @@ class RecorderTab(QWidget):
         self.path, self.dirty = path, False
         self.main.update_title()
         self.main.set_status(f"Saved {os.path.basename(path)}")
+        self.main.remember(path, "recording", library.recording_info(self.events, self.images, self.snaps))
 
     def convert(self):
         if not self.events:

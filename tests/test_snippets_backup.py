@@ -50,3 +50,20 @@ def test_backup_export_and_restore(tmp_path):
     assert new_settings["recent"][0] == restored and new_settings["wallpaper"] == "dusk"
     assert (other / "triggers.clktrig").read_bytes() == b"zipdata"
     assert os.path.exists(other / "snippets" / "Log in.json")
+
+
+def test_backup_carries_library_favorites(tmp_path):
+    import json
+    data = tmp_path / "data"
+    data.mkdir()
+    fav = tmp_path / "fav.clkrec"
+    fav.write_bytes(b"rec")
+    (data / "library.json").write_text(json.dumps({"entries": [
+        {"path": str(fav), "favorite": True}, {"path": str(tmp_path / "plain.clk"), "favorite": False}]}))
+    out = tmp_path / "b.clkbackup"
+    backup.export(str(out), str(data), {})
+    other = tmp_path / "other"
+    other.mkdir()
+    settings, _s = backup.restore(str(out), str(other), str(tmp_path / "restored"))
+    assert settings["library_favorites"] == [str(tmp_path / "restored" / "fav.clkrec")]
+    assert settings["library_ready"] is False            # the new PC rebuilds its Library from these

@@ -10,9 +10,19 @@ FORMAT = "clicker-backup"
 DATA_FILES = ["settings.json", "triggers.clktrig", "history.jsonl"]
 
 
-def _script_paths(settings):
-    """Script files the settings point to: hotkeys, schedule, remote control allow list and recent list."""
-    out = []
+def library_favorites(data_dir):
+    """Paths starred in the Library."""
+    try:
+        with open(os.path.join(data_dir, "library.json"), encoding="utf-8") as f:
+            return [e["path"] for e in json.load(f).get("entries", []) if e.get("favorite") and e.get("path")]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def _script_paths(settings, data_dir=None):
+    """Script files the settings point to: hotkeys, schedule, remote control allow list and recent list,
+    plus Library favorites."""
+    out = list(library_favorites(data_dir)) if data_dir else []
     for e in settings.get("script_hotkeys") or []:
         out.append(e.get("path"))
     for e in settings.get("schedule") or []:
@@ -30,9 +40,9 @@ def _script_paths(settings):
 
 def export(path, data_dir, settings):
     """Write the backup. Returns a short summary."""
-    scripts = _script_paths(settings)
+    scripts = _script_paths(settings, data_dir)
     manifest = {"format": FORMAT, "version": 1, "made": datetime.datetime.now().isoformat(timespec="seconds"),
-                "scripts": {}}
+                "scripts": {}, "favorites": [p for p in library_favorites(data_dir) if os.path.isfile(p)]}
     n_snip = 0
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("data/settings.json", json.dumps(settings, indent=2))
@@ -107,4 +117,7 @@ def restore(path, data_dir, scripts_dir):
     if remote.get("allowed"):
         remote["allowed"] = [fix(p) for p in remote["allowed"]]
     settings["recent"] = [fix(p) for p in settings.get("recent") or []]
+    # the Library is rebuilt from these on the new PC (its own file holds this PC's paths)
+    settings["library_favorites"] = [fix(p) for p in m.get("favorites") or []]
+    settings["library_ready"] = False
     return settings, f"{len(moved)} script{'s' if len(moved) != 1 else ''}, {n_snip} snippet{'s' if n_snip != 1 else ''}"
