@@ -404,13 +404,30 @@ def window_origin(widget):
     return widget.mapTo(widget.window(), QPointF(0, 0).toPoint())
 
 
-# ---------------------------------------------------------------- animation helper
+# ---------------------------------------------------------------- motion
 
-def animate(owner, start, end, ms, on_value, curve=QEasingCurve.Type.OutCubic, done=None, attr="_anim"):
+# One small vocabulary so everything moves alike. Things that arrive decelerate into place (EASE); things
+# that travel between two resting places speed up and slow down (GLIDE); small physical controls settle
+# with a slight spring (SPRING); things that leave accelerate away, quicker than they came (EXIT).
+FAST = 150     # hover, press, fades of small things
+BASE = 250     # popups, dialogs, knobs, panels
+SLOW = 360     # page slides and larger layout moves
+EASE = QEasingCurve(QEasingCurve.Type.OutCubic)
+GLIDE = QEasingCurve(QEasingCurve.Type.InOutCubic)
+EXIT = QEasingCurve(QEasingCurve.Type.InCubic)
+SPRING = QEasingCurve(QEasingCurve.Type.OutBack)
+SPRING.setOvershoot(1.1)  # a gentle settle, not a bounce
+
+
+def animate(owner, start, end, ms, on_value, curve=EASE, done=None, attr="_anim"):
     """Run a value animation, replacing any previous one stored on owner.attr."""
     old = getattr(owner, attr, None)
     if old is not None:
-        old.stop()
+        try:
+            old.stop()
+            old.deleteLater()  # otherwise every hover leaves an animation object behind
+        except RuntimeError:
+            pass  # its owner is already gone
     a = QVariantAnimation(owner)
     a.setStartValue(float(start))
     a.setEndValue(float(end))
@@ -422,6 +439,12 @@ def animate(owner, start, end, ms, on_value, curve=QEasingCurve.Type.OutCubic, d
     setattr(owner, attr, a)
     a.start()
     return a
+
+
+def fade_in(widget, ms=FAST, attr="_fade", start=0.0):
+    """Fade a top level window in (start: its opacity now, if it was part way through fading out)."""
+    widget.setWindowOpacity(start)
+    return animate(widget, start, 1.0, ms, lambda v: widget.setWindowOpacity(float(v)), attr=attr)
 
 
 _motion = {"on": True}

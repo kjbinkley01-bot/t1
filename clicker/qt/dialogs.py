@@ -59,9 +59,39 @@ class GlassDialog(QDialog):
     def showEvent(self, e):
         self.fit()
         g = self.main.geometry()
-        self.move(g.center() - QPoint(self.width() // 2, self.height() // 2 + 40))
-        glass.animate(self, 0.0, 1.0, 180, lambda v: self.setWindowOpacity(float(v)), attr="_fade")
+        end = g.center() - QPoint(self.width() // 2, self.height() // 2 + 40)
+        scr = self.screen().availableGeometry() if self.screen() else None
+        if scr is not None:  # tall sheets over a small window must not start above the screen
+            end.setX(max(scr.left(), min(end.x(), scr.right() - self.width())))
+            end.setY(max(scr.top(), min(end.y(), scr.bottom() - self.height())))
+        self._closing = False
         super().showEvent(e)
+        if not glass.motion_on():
+            self.move(end)
+            self.setWindowOpacity(1.0)
+            return
+        # the sheet rises a little into place as it fades in, and sinks away faster when it closes
+        self.move(end + QPoint(0, 14))
+        glass.fade_in(self, glass.BASE)
+        glass.animate(self, 14.0, 0.0, glass.BASE, lambda v: self.move(end + QPoint(0, round(v))), attr="_rise")
+
+    def moveEvent(self, e):
+        self.update()  # the frosted glass shows the wallpaper behind wherever the sheet now is
+        super().moveEvent(e)
+
+    def done(self, result):
+        if getattr(self, "_closing", False):
+            return
+        if not (self.isVisible() and glass.motion_on()):
+            return super().done(result)
+        self._closing = True
+        rise = getattr(self, "_rise", None)
+        if rise is not None:
+            rise.stop()
+        start = self.pos()
+        glass.animate(self, 0.0, 1.0, glass.FAST, lambda v: (self.setWindowOpacity(1.0 - float(v)),
+                                                            self.move(start + QPoint(0, round(8 * float(v))))),
+                      curve=glass.EXIT, attr="_fade", done=lambda: QDialog.done(self, result))
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not isinstance(self.focusWidget(), QComboBox):

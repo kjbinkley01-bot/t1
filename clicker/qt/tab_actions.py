@@ -14,11 +14,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
 from .. import editing, flow, formlogic, inputs, model, runlog, storage, target, vision
 from ..runner import Runner
 from ..storage import AssetStore
-from . import dialogs
+from . import dialogs, glass
 from .flowview import FlowPanel, FlowRail
 from .glass import GlassPanel, font
 from .thumbs import ImageStrip, step_icon
-from .widgets import Caption, GlassButton, GlassSwitch, clear_layout
+from .widgets import Caption, GlassButton, GlassSwitch, Reveal, clear_layout
 
 SPEEDS = ["0.25x", "0.5x", "0.75x", "1.0x", "1.5x", "2.0x", "3.0x"]
 COLUMNS = [("#", 44), ("Label", 86), ("Action", 170), ("X", 64), ("Y", 64), ("Back", 54), ("Delay", 64),
@@ -247,10 +247,10 @@ class ActionTab(QWidget):
         self._build()
         self.btn_flow.set_kind("on" if self.flow_on else "glass")
         self.rail.setVisible(self.flow_on)
-        self.flow_panel.setVisible(self.flow_on)
-        chart_on = bool(self.main.settings.get("show_chart", False))
-        self.chart.setVisible(chart_on)
-        self.btn_chart.set_kind("on" if chart_on else "glass")
+        self.flow_reveal.setVisible(self.flow_on)
+        self.chart_on = bool(self.main.settings.get("show_chart", False))
+        self.chart.setVisible(self.chart_on)
+        self.btn_chart.set_kind("on" if self.chart_on else "glass")
         self._shortcuts()
         self._on_action_change()
         self._on_wait_mode()
@@ -499,7 +499,7 @@ class ActionTab(QWidget):
         self.btn_chart = GlassButton("Chart", icon="bounding-box", small=True,
                                      tip="The script as boxes and arrows: drag to move steps, drag a handle to "
                                          "set a jump")
-        self.btn_chart.clicked.connect(lambda: self.set_chart_visible(not self.chart.isVisible()))
+        self.btn_chart.clicked.connect(lambda: self.set_chart_visible(not self.chart_on))
         h.addWidget(self.btn_chart)
         self.btn_flow = GlassButton("Flow", icon="repeat", small=True, tip="Show where loops and jumps lead")
         self.btn_flow.clicked.connect(lambda: self.set_flow_visible(not self.flow_on))
@@ -578,7 +578,8 @@ class ActionTab(QWidget):
         self.splitter.setStyleSheet("QSplitter::handle { background: transparent; width: 10px; }")
         body.addWidget(self.splitter, 1)
         body.addSpacing(8)
-        body.addWidget(self.flow_panel)
+        self.flow_reveal = Reveal(self.flow_panel)
+        body.addWidget(self.flow_reveal)
         body.addWidget(self.vars_panel)
         sl.addLayout(body, 1)
         self.flow_on = bool(self.main.settings.get("show_flow", True))
@@ -1077,19 +1078,44 @@ class ActionTab(QWidget):
         self.main.save_settings()
         self.btn_flow.set_kind("on" if self.flow_on else "glass")
         self.rail.setVisible(self.flow_on)
-        self.flow_panel.setVisible(self.flow_on)
+        self.flow_reveal.set_open(self.flow_on, done=self._fit_window)
+
+    def _fit_window(self):
         if hasattr(self.main, "update_min_width"):
             self.main.update_min_width()
 
     def set_chart_visible(self, on):
-        self.chart.setVisible(bool(on))
+        """Show or hide the chart; it slides open beside the list, pushing the list over."""
+        self.chart_on = on = bool(on)
         self.btn_chart.set_kind("on" if on else "glass")
-        self.main.settings["show_chart"] = bool(on)
+        self.main.settings["show_chart"] = on
         self.main.save_settings()
         if on:
             self.chart.rebuild()
-        if hasattr(self.main, "update_min_width"):
-            self.main.update_min_width()
+        if not glass.motion_on() or not self.isVisible():
+            self.chart.setVisible(on)
+            self._fit_window()
+            return
+        total = sum(self.splitter.sizes())
+        start = self.chart.width() if self.chart.isVisible() else 0
+        end = getattr(self, "_chart_w", 0) or int(total * 0.4)
+        if not on:
+            self._chart_w, end = start, 0  # reopen at the width it had
+        else:
+            self._fit_window()  # the window may need to grow first
+        self.chart.setMinimumWidth(0)
+        self.chart.setVisible(True)
+
+        def step(v):
+            w = round(v)
+            self.splitter.setSizes([max(0, total - w), w])
+
+        def finish():
+            self.chart.setMinimumWidth(self.chart.MIN_WIDTH)
+            self.chart.setVisible(on)
+            if not on:
+                self._fit_window()
+        glass.animate(self, start, end, glass.BASE, step, curve=glass.GLIDE, attr="_chart_anim", done=finish)
 
     def move_steps_to(self, indexes, target):
         """Move steps (from the chart) so they start at target."""

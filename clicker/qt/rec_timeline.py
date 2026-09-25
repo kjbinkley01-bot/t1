@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QHeaderView, QLabel, QLineEdit, QScr
 
 from .. import recedit
 from ..recorder import MOD_KEYS, key_text
+from . import glass
 from .glass import GlassPanel, font
 from .widgets import Caption, GlassButton, mode_of
 
@@ -166,12 +167,16 @@ class Timeline(QWidget):
         p.setFont(font(8))
         step = next(s for s in (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600) if s * self.px_per_s() >= 64)
         t = (int(t0 / step)) * step
+        fm = p.fontMetrics()
         while t <= min(t1, self.duration) + 1e-6:
             x = self.x_of(t)
             p.setPen(m.line)
             p.drawLine(QPointF(x, RULER_H - 6), QPointF(x, h))
             p.setPen(m.detail)
-            p.drawText(QPointF(x + 3, RULER_H - 9), fmt_t(t) if step < 60 else f"{int(t // 60)}m")
+            label = fmt_t(t) if step < 60 else f"{int(t // 60)}m"
+            tw = fm.horizontalAdvance(label)
+            lx = x + 3 if x + 3 + tw <= w - 2 else x - 3 - tw  # the last label sits left of its tick
+            p.drawText(QPointF(lx, RULER_H - 9), label)
             t += step
         y = RULER_H
         lane_y = {}
@@ -358,9 +363,9 @@ class RecordingEditor(GlassPanel):
         self.btn_redo = GlassButton("", icon="arrow-clockwise", small=True, tip="Redo edit")
         self.btn_redo.clicked.connect(self.redo)
         zo = GlassButton("−", small=True, tip="Zoom out")
-        zo.clicked.connect(lambda: self.set_zoom(self.timeline.zoom / 1.6))
+        zo.clicked.connect(lambda: self.set_zoom(getattr(self, "_zoom_to", self.timeline.zoom) / 1.6))
         zi = GlassButton("+", small=True, tip="Zoom in")
-        zi.clicked.connect(lambda: self.set_zoom(self.timeline.zoom * 1.6))
+        zi.clicked.connect(lambda: self.set_zoom(getattr(self, "_zoom_to", self.timeline.zoom) * 1.6))
         for b in (self.btn_undo, self.btn_redo, zo, zi):
             head.addWidget(b)
         lay.addLayout(head)
@@ -530,8 +535,18 @@ class RecordingEditor(GlassPanel):
         self.timeline.relayout(max(300, self.scroll.viewport().width()))
 
     def set_zoom(self, z):
-        self.timeline.zoom = min(40.0, max(1.0, z))
-        self.timeline.relayout()
+        """Zoom smoothly, keeping the moment in the middle of the view where it is."""
+        tl, bar = self.timeline, self.scroll.horizontalScrollBar()
+        self._zoom_to = min(40.0, max(1.0, z))
+        half = self.scroll.viewport().width() / 2
+        center = tl.t_of(bar.value() + half)
+
+        def step(v):
+            tl.zoom = float(v)
+            tl.relayout()
+            tl.resize(tl.minimumWidth(), tl.height())  # now, so the scroll range is right for this frame
+            bar.setValue(round(tl.x_of(center) - half))
+        glass.animate(self, tl.zoom, self._zoom_to, glass.BASE, step, attr="_zanim")
 
     def _refresh(self):
         ev = self.tab.events

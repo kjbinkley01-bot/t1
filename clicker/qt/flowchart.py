@@ -5,10 +5,11 @@ handle onto another box to make it jump there (Go to, Loop Back, Call, and the j
 """
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QTransform
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsObject, QGraphicsScene, QGraphicsView
 
 from .. import flow, model
+from . import glass
 from .flowview import color
 from .glass import font
 
@@ -141,6 +142,7 @@ class StepBox(QGraphicsObject):
 class FlowChart(QGraphicsView):
     """Boxes and arrows for the Action Script tab. It rebuilds from the script after every change."""
 
+    MIN_WIDTH = 320
 
     def __init__(self, tab):
         super().__init__()
@@ -150,11 +152,12 @@ class FlowChart(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setStyleSheet("QGraphicsView { background: rgba(0,0,0,40); border: none; border-radius: 16px; }")
         self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-        self.setMinimumWidth(320)
+        self.setMinimumWidth(self.MIN_WIDTH)
         self.boxes = []
         self._link = None
         self._drop = None
-        self.zoom = 1.0
+        self.zoom = self._zoom_to = 1.0
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
     @property
     def dark(self):
@@ -165,6 +168,11 @@ class FlowChart(QGraphicsView):
     def rebuild(self):
         steps = self.tab.script["steps"]
         sc = self.scene_
+        # where each step's box was, so boxes that moved can glide to their new places
+        glide = getattr(self, "_glide", None)
+        if glide is not None:
+            glide.stop()
+        before = {id(b.step): (b.step, b.pos()) for b in self.boxes} if glass.motion_on() and self.isVisible() else {}
         sc.clear()
         self._link = self._drop = None
         self.boxes = []
@@ -222,6 +230,8 @@ class FlowChart(QGraphicsView):
             path.cubicTo(QPointF(out, a.y()), QPointF(out, b.y()), b)
             c = color(e["kind"], self.dark)
             self._arrow(path, b, QPen(c, 2), down=False)
+        decor = list(sc.items())
+        moves, fresh = [], []
         for i, st in enumerate(steps):
             box = StepBox(self, i, st, depth[i])
             box.setPos(*pos[i])
@@ -229,10 +239,35 @@ class FlowChart(QGraphicsView):
             box.dead = i in dead
             sc.addItem(box)
             self.boxes.append(box)
+            old = before.get(id(st))
+            if old is not None and old[0] is st:
+                if old[1] != box.pos():
+                    moves.append((box, old[1], box.pos()))
+            elif before:
+                fresh.append(box)
+        if moves or fresh:
+            self._settle(moves, fresh, decor)
         w = right + 20 + (max(lanes) + 1 if lanes else 0) * 16 + 30
         sc.setSceneRect(QRectF(0, 0, max(w, 300), y + 10))
         self.set_selection(self.tab._selection())
         self.set_running(self.tab.running_row)
+
+    def _settle(self, moves, fresh, decor):
+        """Glide moved boxes from where they were; fade in new boxes and the redrawn arrows."""
+        for box, a, _b in moves:
+            box.setPos(a)
+        for it in fresh + decor:
+            it.setOpacity(0.0 if it in fresh else 0.2)
+
+        def step(t):
+            t = float(t)
+            for box, a, b in moves:
+                box.setPos(a + (b - a) * t)
+            for it in fresh:
+                it.setOpacity(t)
+            for it in decor:
+                it.setOpacity(0.2 + 0.8 * t)
+        glass.animate(self, 0.0, 1.0, glass.SLOW, step, curve=glass.GLIDE, attr="_glide")
 
     def _arrow(self, path, tip, pen, down):
         sc = self.scene_
@@ -332,8 +367,11 @@ class FlowChart(QGraphicsView):
     def wheelEvent(self, e):
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier:
             f = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
-            self.zoom = max(0.4, min(2.0, self.zoom * f))
-            self.resetTransform()
-            self.scale(self.zoom, self.zoom)
+            self._zoom_to = max(0.4, min(2.0, self._zoom_to * f))
+            glass.animate(self, self.zoom, self._zoom_to, glass.FAST + 30, self._set_zoom, attr="_zanim")
         else:
             super().wheelEvent(e)
+
+    def _set_zoom(self, z):
+        self.zoom = float(z)
+        self.setTransform(QTransform.fromScale(self.zoom, self.zoom))

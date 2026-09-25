@@ -1,6 +1,6 @@
 """Glass controls: buttons, segmented tabs, switches, fields and the step table styling."""
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QCheckBox, QHBoxLayout, QLabel, QSizePolicy,
                                QWidget)
@@ -55,11 +55,11 @@ class GlassButton(QAbstractButton):
         return self.sizeHint()
 
     def enterEvent(self, e):
-        animate(self, self._hover, 1.0, 160, self._set_hover, attr="_hanim")
+        animate(self, self._hover, 1.0, glass.FAST, self._set_hover, attr="_hanim")
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        animate(self, self._hover, 0.0, 220, self._set_hover, attr="_hanim")
+        animate(self, self._hover, 0.0, glass.BASE, self._set_hover, attr="_hanim")
         super().leaveEvent(e)
 
     def mousePressEvent(self, e):
@@ -67,7 +67,7 @@ class GlassButton(QAbstractButton):
         super().mousePressEvent(e)
 
     def mouseReleaseEvent(self, e):
-        animate(self, self._press, 0.0, 260, self._set_press, curve=QEasingCurve.Type.OutBack, attr="_panim")
+        animate(self, self._press, 0.0, glass.BASE, self._set_press, curve=glass.SPRING, attr="_panim")
         super().mouseReleaseEvent(e)
 
     def _set_hover(self, v):
@@ -221,7 +221,7 @@ class SegmentedTabs(QWidget):
             cx = sx + sw / 2 + ((tx + tw / 2) - (sx + sw / 2)) * t
             self._lens = (cx - w / 2, w)
             self.update()
-        animate(self, 0.0, 1.0, 340, step, curve=QEasingCurve.Type.OutCubic, attr="_lanim",
+        animate(self, 0.0, 1.0, glass.SLOW, step, attr="_lanim",
                 done=lambda: (setattr(self, "_lens", self._to), self.update()))
 
     def _key_at(self, x):
@@ -308,8 +308,8 @@ class GlassSwitch(QCheckBox):
         self._pos = 0.0
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFont(font(10))
-        self.toggled.connect(lambda on: animate(self, self._pos, 1.0 if on else 0.0, 220, self._set_pos,
-                                                curve=QEasingCurve.Type.OutBack, attr="_sanim"))
+        self.toggled.connect(lambda on: animate(self, self._pos, 1.0 if on else 0.0, glass.BASE, self._set_pos,
+                                                curve=glass.SPRING, attr="_sanim"))
 
     def setChecked(self, on):
         super().setChecked(on)
@@ -471,3 +471,50 @@ def clear_layout(layout):
 def dpr():
     return QApplication.primaryScreen().devicePixelRatio() if QApplication.primaryScreen() else 1.0
 
+
+
+class Reveal(QWidget):
+    """Opens and closes around a fixed width panel like a drawer, so the panel never reflows mid-motion.
+
+    The panel keeps its full width the whole time and rides on the moving (left) edge; only the
+    visible slice changes, and the neighbours in the layout make room smoothly.
+    """
+
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self.full = panel.width() if panel.minimumWidth() == panel.maximumWidth() else panel.sizeHint().width()
+        panel.setParent(self)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+        self.setFixedWidth(self.full)
+
+    def is_open(self):
+        return self.isVisible() and self.width() > 0
+
+    def set_open(self, on, done=None):
+        def finish():
+            if not on:
+                self.hide()
+            if done:
+                done()
+        if not glass.motion_on() or not self.window().isVisible():
+            self.setFixedWidth(self.full)
+            self.setVisible(on)
+            finish()
+            return
+        start = self.width() if self.isVisible() else 0
+        if on:
+            self.setFixedWidth(start)
+            self.show()
+        glass.animate(self, start, self.full if on else 0, glass.BASE, lambda v: self.setFixedWidth(round(v)),
+                      curve=glass.GLIDE, attr="_reveal", done=finish)
+
+    def resizeEvent(self, e):
+        self.panel.setGeometry(0, 0, self.full, self.height())
+        super().resizeEvent(e)
+
+    def sizeHint(self):
+        return QSize(self.width(), self.panel.sizeHint().height())
+
+    def minimumSizeHint(self):
+        return QSize(self.width(), self.panel.minimumSizeHint().height())

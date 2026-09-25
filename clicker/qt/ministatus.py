@@ -3,9 +3,10 @@
 import time
 
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from . import glass
 from .glass import font
 from .widgets import GlassButton
 
@@ -27,10 +28,17 @@ class _Bar(QWidget):
         p.setBrush(QColor(255, 255, 255, 40))
         r = QRectF(self.rect())
         p.drawRoundedRect(r, 3, 3)
-        if self.frac is None:  # no timed wait: a slow shimmer shows it's alive
-            x = (time.monotonic() * 0.6) % 1.4 - 0.2
-            p.setBrush(QColor(127, 220, 255, 150))
-            p.drawRoundedRect(QRectF(r.width() * x, 0, r.width() * 0.2, r.height()), 3, 3)
+        if self.frac is None:  # no timed wait: a soft glow sweeps across to show it's alive
+            u = (time.monotonic() % 1.6) / 1.6
+            u = u * u * (3 - 2 * u)                      # ease in and out of each sweep
+            w = r.width() * 0.35
+            x = -w + (r.width() + w) * u
+            g = QLinearGradient(x, 0, x + w, 0)
+            g.setColorAt(0.0, QColor(127, 220, 255, 0))
+            g.setColorAt(0.5, QColor(127, 220, 255, 170))
+            g.setColorAt(1.0, QColor(127, 220, 255, 0))
+            p.setBrush(g)
+            p.drawRoundedRect(r, 3, 3)
         else:
             p.setBrush(QColor("#0a84ff"))
             p.drawRoundedRect(QRectF(0, 0, max(6.0, r.width() * self.frac), r.height()), 3, 3)
@@ -72,10 +80,12 @@ class MiniStatus(QWidget):
         self.bar = _Bar()
         lay.addWidget(self.bar)
         self.timer = QTimer(self)
-        self.timer.setInterval(100)
-        self.timer.timeout.connect(self.tick)
+        self.timer.setInterval(16)  # the bar moves every frame; the text only changes a few times a second
+        self.timer.timeout.connect(self._frame)
+        self._frames = 0
         self._drag = None
         self._started = None
+        self._leaving = False
 
     # ------------------------------------------------------------ show / hide
 
@@ -89,17 +99,26 @@ class MiniStatus(QWidget):
 
     def sync(self):
         if self.wanted():
-            if not self.isVisible():
-                self._place()
+            if not self.isVisible() or self._leaving:
+                if not self.isVisible():
+                    self._place()
+                glass.fade_in(self, glass.BASE, start=self.windowOpacity() if self._leaving else 0.0)
+                self._leaving = False
                 self._started = self._started or time.monotonic()
                 self.show()
                 self.timer.start()
             self.tick()
-        elif self.isVisible():
-            self.hide()
-            self.timer.stop()
+        elif self.isVisible() and not self._leaving:
+            self._leaving = True
+            glass.animate(self, self.windowOpacity(), 0.0, glass.FAST, lambda v: self.setWindowOpacity(float(v)),
+                          curve=glass.EXIT, attr="_fade", done=self._gone)
         if not self.main.all_runs():
             self._started = None
+
+    def _gone(self):
+        self._leaving = False
+        self.hide()
+        self.timer.stop()
 
     def _place(self):
         pos = self.main.settings.get("mini_status_pos")
@@ -110,6 +129,22 @@ class MiniStatus(QWidget):
             self.move(scr.right() - self.width() - 24, scr.bottom() - self.height() - 24)
 
     # ------------------------------------------------------------ content
+
+    def _frame(self):
+        self._frames += 1
+        if self._frames % 6 == 0:
+            self.tick()
+        else:
+            self._update_bar()
+
+    def _update_bar(self):
+        tab = self.main.action_tab
+        frac = None
+        if self.main.job_owner is tab and tab.progress:
+            pr = tab.progress
+            frac = min(1.0, tab.progress_elapsed() / pr["duration"]) if pr["duration"] > 0 else None
+        self.bar.frac = frac
+        self.bar.update()
 
     def tick(self):
         runs = self.main.all_runs()
@@ -138,13 +173,7 @@ class MiniStatus(QWidget):
         if len(runs) > 1:
             text += f"   (+{len(runs) - 1} more running)"
         self.lbl_step.setText(text)
-        tab = self.main.action_tab
-        frac = None
-        if self.main.job_owner is tab and tab.progress:
-            pr = tab.progress
-            frac = min(1.0, tab.progress_elapsed() / pr["duration"]) if pr["duration"] > 0 else None
-        self.bar.frac = frac
-        self.bar.update()
+        self._update_bar()
 
     def paintEvent(self, _e):
         p = QPainter(self)

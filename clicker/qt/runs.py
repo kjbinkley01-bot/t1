@@ -6,6 +6,7 @@ from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from .. import storage
+from . import glass
 from .glass import font
 from .widgets import Caption, GlassButton
 
@@ -68,6 +69,7 @@ class RunsPanel(QFrame):
         self.adjustSize()
         p = widget.mapToGlobal(QPoint(widget.width() - self.width(), -self.height() - 8))
         self.move(p)
+        glass.fade_in(self)
         self.show()
         QTimer.singleShot(0, self._fit)
         self.timer.start()

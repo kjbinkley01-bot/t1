@@ -9,13 +9,13 @@ import threading
 import traceback
 import webbrowser
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QRegion
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import alerts, clipboard, model, storage, updates, vision
-from . import scripthotkeys
+from . import motion, scripthotkeys
 from ..core import PROGRESS_ONLY, CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
 from ..triggers import TriggerEngine
@@ -212,19 +212,13 @@ class Toast(QWidget):
         self.move(end + QPoint(0, 18))
         self.setWindowOpacity(0.0)
         self.show()
-        a = QPropertyAnimation(self, b"pos", self)
-        a.setDuration(260 if glass.motion_on() else 0)
-        a.setStartValue(end + QPoint(0, 18))
-        a.setEndValue(end)
-        a.setEasingCurve(QEasingCurve.Type.OutCubic)
-        a.start()
-        glass.animate(self, 0.0, 1.0, 220, lambda v: self.setWindowOpacity(float(v)), attr="_fade")
-        self._slide = a
+        glass.animate(self, 18.0, 0.0, glass.BASE, lambda v: self.move(end + QPoint(0, round(v))), attr="_slide")
+        glass.fade_in(self, glass.BASE)
         self._timer.start(ms) if ms else self._timer.stop()
 
     def hide_animated(self):
-        glass.animate(self, self.windowOpacity(), 0.0, 180, lambda v: self.setWindowOpacity(float(v)),
-                      done=self.hide, attr="_fade")
+        glass.animate(self, self.windowOpacity(), 0.0, glass.FAST, lambda v: self.setWindowOpacity(float(v)),
+                      curve=glass.EXIT, done=self.hide, attr="_fade")
 
     def mousePressEvent(self, _e):
         self.hide_animated()
@@ -269,11 +263,17 @@ class Highlight(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self._t = QTimer(self)
         self._t.setSingleShot(True)
-        self._t.timeout.connect(self.hide)
+        self._t.timeout.connect(lambda: glass.animate(self, 1.0, 0.0, glass.BASE,
+                                                      lambda v: self.setWindowOpacity(float(v)),
+                                                      curve=glass.EXIT, attr="_fade", done=self.hide))
 
     def flash(self, rect, ms=700):
         x, y, w, h = (int(v) for v in rect)
         self.setGeometry(QRect(x - 5, y - 5, w + 10, h + 10))
+        a = getattr(self, "_fade", None)
+        if a is not None:
+            a.stop()
+        self.setWindowOpacity(1.0)
         self.show()
         self.update()
         self._t.start(ms)
@@ -1482,6 +1482,7 @@ def main():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(model.APP_NAME)
     glass.load_fonts()
+    motion.install(app)
     win = GlassApp()
     win.show()
     return app.exec()
