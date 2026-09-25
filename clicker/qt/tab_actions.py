@@ -18,6 +18,7 @@ from . import dialogs, glass, motion
 from .flowview import FlowPanel, FlowRail
 from .glass import GlassPanel, font
 from .thumbs import ImageStrip, step_icon
+from .library_dialog import LibraryHome, pick_script
 from .widgets import Caption, GlassButton, GlassSwitch, Reveal, clear_layout
 
 SPEEDS = ["0.25x", "0.5x", "0.75x", "1.0x", "1.5x", "2.0x", "3.0x"]
@@ -223,6 +224,8 @@ class _DragFilter(QObject):
             self.row = None
             moved, self.moved = self.moved, False
             return moved
+        elif e.type() == QEvent.Type.Resize and t.home.parent() is obj:
+            t.home.setGeometry(obj.rect())
         return False
 
 
@@ -528,6 +531,11 @@ class ActionTab(QWidget):
         hdr.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
         hdr.setMinimumSectionSize(40)
         self.tree.itemSelectionChanged.connect(self._on_select)
+        self.home = LibraryHome(self.main)  # shown over the list while there are no steps
+        self.home.setParent(self.tree.viewport())
+        self.home.hide()
+        self.home.opened.connect(lambda e: self.open_from_library(e["path"]))
+        self.home.library.connect(lambda: self.main.open_library("script"))
         self._drag = _DragFilter(self)
         self.tree.viewport().installEventFilter(self._drag)
         self._dead = set()
@@ -1192,6 +1200,21 @@ class ActionTab(QWidget):
         where = f" · built on {scr['width']} x {scr['height']}" if scr else ""
         self.lbl_count.setText(f"{n} action{'s' if n != 1 else ''}{where}")
         self.main.update_title()
+        self.update_home()
+
+    def update_home(self, force=False):
+        """Show the Library's scripts over the empty list of a new, untouched script."""
+        want = not self.script["steps"] and not self.path
+        if want and (force or not self.home.isVisible()):
+            if self.home.refresh():
+                self.home.setGeometry(self.tree.viewport().rect())
+                if not self.home.isVisible():
+                    self.home.show()
+                    self.home.raise_()
+                return
+            want = False
+        if not want and self.home.isVisible():
+            self.home.hide()
 
     def select_step(self, i):
         """Select step i (0-based), scroll to it and load it into the editor."""
@@ -1329,7 +1352,7 @@ class ActionTab(QWidget):
                 self.main.set_status(f"Could not read it: {e}", error=True)
 
     def browse_script(self, edit):
-        path, _ = QFileDialog.getOpenFileName(self, "Script to run", "", storage.SCRIPT_FILTER)
+        path = pick_script(self.main, "Script to run")
         if path:
             edit.setText(path)
 

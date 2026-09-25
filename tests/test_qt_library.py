@@ -62,3 +62,33 @@ def test_missing_files_and_browse(qapp, tmp_path, monkeypatch):
     assert d.chosen is None and lib.list() == [] and d.cards == []
     d._browse()
     assert d.browse is True
+
+
+def test_picker_mode_lists_only_that_kind(qapp, tmp_path):
+    lib = library.Library(str(tmp_path / "data"))
+    lib.touch_file(make_script(tmp_path / "a.clk", "Alpha"))
+    lib.touch_file(make_recording(tmp_path / "walk.clkrec"))
+    d = LibraryDialog(Main(lib), "script", pick=True, title="Choose a script")
+    assert names(d) == ["Alpha"] and set(d.chips) == {"all", "favorites"}
+    d.select_card(d.cards[0])
+    d.accept()
+    assert d.chosen["name"] == "Alpha"
+
+
+def test_home_row_shows_scripts_favorites_first(qapp, tmp_path):
+    from clicker.qt.library_dialog import LibraryHome
+    lib = library.Library(str(tmp_path / "data"))
+    a = make_script(tmp_path / "a.clk", "Alpha")
+    lib.touch_file(a)
+    lib.touch_file(make_script(tmp_path / "b.clk", "Beta"))
+    lib.touch_file(make_recording(tmp_path / "walk.clkrec"))
+    lib.set_favorite(a, True)
+    home = LibraryHome(Main(lib))
+    assert home.refresh() is True
+    cards = [home.row.itemAt(i).widget() for i in range(home.row.count()) if home.row.itemAt(i).widget()]
+    assert [c.entry["name"] for c in cards] == ["Alpha", "Beta"]
+    opened = []
+    home.opened.connect(opened.append)
+    cards[1].clicked.emit(cards[1])
+    assert opened[0]["name"] == "Beta"
+    assert LibraryHome(Main(library.Library(str(tmp_path / "empty")))).refresh() is False

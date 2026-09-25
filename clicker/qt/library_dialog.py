@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainter
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
                                QScrollArea, QVBoxLayout, QWidget)
 
-from .. import library, runlog
+from .. import library, runlog, storage
 from . import dialogs, glass
 from .flowchart import group_color
 from .glass import font, icon_pixmap
@@ -54,14 +54,16 @@ def star_path(cx, cy, r):
 
 
 class LibraryCard(QWidget):
+    clicked = Signal(object)
     opened = Signal(dict)
     starred = Signal(dict)
     menu = Signal(dict, object)
 
-    def __init__(self, lib, entry):
+    def __init__(self, lib, entry, compact=False):
         super().__init__()
         self.lib, self.entry = lib, entry
-        self.setFixedSize(CARD_W, CARD_H)
+        self.w, self.h, self.thumb_h = (196, 150, 84) if compact else (CARD_W, CARD_H, THUMB_H)
+        self.setFixedSize(self.w, self.h)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self.selected = False
@@ -70,7 +72,7 @@ class LibraryCard(QWidget):
         self.setToolTip(tip)
 
     def _star_rect(self):
-        return QRectF(CARD_W - 40, 14, 26, 26)
+        return QRectF(self.w - 40, 14, 26, 26)
 
     def enterEvent(self, e):
         glass.animate(self, self._hover, 1.0, glass.FAST, self._set_hover, attr="_hanim")
@@ -90,7 +92,7 @@ class LibraryCard(QWidget):
         elif self._star_rect().contains(e.position()):
             self.starred.emit(self.entry)
         else:
-            self.window().select_card(self)
+            self.clicked.emit(self)
 
     def mouseDoubleClickEvent(self, e):
         if not self._star_rect().contains(e.position()):
@@ -105,13 +107,13 @@ class LibraryCard(QWidget):
         if e.get("missing"):
             p.setOpacity(0.45)
         lift = self._hover
-        card = QRectF(4, 4 - 2 * lift, CARD_W - 8, CARD_H - 8)
+        card = QRectF(4, 4 - 2 * lift, self.w - 8, self.h - 8)
         p.setPen(QPen(QColor(glass.ACCENT), 2) if self.selected else
                  QPen(QColor(255, 255, 255, int(40 + 50 * lift)), 1))
         p.setBrush(QColor(255, 255, 255, int(14 + 16 * lift) if m.dark else int(120 + 60 * lift)))
         p.drawRoundedRect(card, 18, 18)
         # thumbnail
-        tr = QRectF(card.x() + 8, card.y() + 8, card.width() - 16, THUMB_H)
+        tr = QRectF(card.x() + 8, card.y() + 8, card.width() - 16, self.thumb_h)
         clip = QPainterPath()
         clip.addRoundedRect(tr, 12, 12)
         p.save()
@@ -175,9 +177,9 @@ class LibraryCard(QWidget):
             p.setFont(font(8.5))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, "Empty script")
             return
-        rows = acts[:4]
         h, gap = 14, 7
         area = r.height() - 34  # keep clear of the badge in the bottom corner
+        rows = acts[:max(1, min(4, int((area + gap) // (h + gap))))]
         top = r.y() + 6 + (area - (len(rows) * h + (len(rows) - 1) * gap)) / 2
         for k, a in enumerate(rows):
             c = QColor(group_color(a))
@@ -210,13 +212,18 @@ class LibraryCard(QWidget):
 
 
 class LibraryDialog(dialogs.GlassDialog):
-    """Pick a script or recording. After exec: .chosen (an entry), or .browse is True, or neither."""
+    """Pick a script or recording. After exec: .chosen (an entry), or .browse is True, or neither.
 
-    def __init__(self, main, kind=None):
-        super().__init__(main, "Library")
+    pick: choosing a file for something else (a hotkey, the schedule...): only that kind is listed,
+    and the button says Choose.
+    """
+
+    def __init__(self, main, kind=None, pick=False, title="Library", parent=None):
+        super().__init__(main, title, parent)
         self.lib = main.library
         self.chosen, self.browse = None, False
-        self.filter = kind if kind in ("script", "recording") else "all"
+        self.lock = kind if pick else None
+        self.filter = kind if kind in ("script", "recording") and not pick else "all"
         self.browse_kind = kind or "script"
         self.cards, self.sel = [], None
         top = QHBoxLayout()
@@ -231,12 +238,14 @@ class LibraryDialog(dialogs.GlassDialog):
         self.search.installEventFilter(self)
         top.addWidget(self.search, 1)
         self.chips = {}
-        for key, text in FILTERS:
+        for key, text in ([("all", "All"), ("favorites", "Favorites")] if self.lock else FILTERS):
             b = GlassButton(text, small=True, kind="on" if key == self.filter else "glass")
             b.clicked.connect(lambda _=False, k=key: self.set_filter(k))
             self.chips[key] = b
             top.addWidget(b)
         top.addSpacing(10)
+        if pick:
+            self.search.setPlaceholderText(f"Search {kind}s")
         b = GlassButton("Add folder...", icon="folder-open", small=True,
                         tip="Add every script and recording in a folder")
         b.clicked.connect(self.add_folder)
@@ -259,7 +268,7 @@ class LibraryDialog(dialogs.GlassDialog):
         self.hint = QLabel("Double-click a card (or press Enter) to open it. Right-click for more.")
         self.hint.setProperty("role", "detail")
         self.body.addWidget(self.hint)
-        self.add_buttons("Open", "Close")
+        self.add_buttons("Choose" if pick else "Open", "Cancel" if pick else "Close")
         self.refresh()
         self.search.setFocus()
 
@@ -273,7 +282,7 @@ class LibraryDialog(dialogs.GlassDialog):
 
     def refresh(self):
         q = self.search.text()
-        kind = self.filter if self.filter in ("script", "recording") else None
+        kind = self.lock or (self.filter if self.filter in ("script", "recording") else None)
         entries = self.lib.list(q, kind=kind, favorites=self.filter == "favorites")
         while self.grid.count():
             it = self.grid.takeAt(0)
@@ -314,6 +323,7 @@ class LibraryDialog(dialogs.GlassDialog):
         g.setSpacing(8)
         for i, e in enumerate(entries):
             card = LibraryCard(self.lib, e)
+            card.clicked.connect(self.select_card)
             card.opened.connect(self.open_entry)
             card.starred.connect(self.toggle_star)
             card.menu.connect(self.card_menu)
@@ -356,7 +366,7 @@ class LibraryDialog(dialogs.GlassDialog):
     def card_menu(self, e, pos):
         m = QMenu(self)
         m.addAction("Open", lambda: self.open_entry(e))
-        if e.get("kind") == "script" and not e.get("missing"):
+        if e.get("kind") == "script" and not e.get("missing") and not self.lock:
             m.addAction("Run now", lambda: (self.main.run_script_hotkey(e["path"], from_menu=True), self.reject()))
         m.addAction("Remove star" if e.get("favorite") else "Add to favorites", lambda: self.toggle_star(e))
         m.addAction("Show in folder", lambda: runlog.open_folder(os.path.dirname(e["path"])))
@@ -397,3 +407,71 @@ class LibraryDialog(dialogs.GlassDialog):
 
     def sizeHint(self):
         return QSize(4 * CARD_W + 120, 2 * CARD_H + 260)
+
+
+def pick_script(main, title="Choose a script", parent=None):
+    """Choose a script from the Library (Browse files... falls back to a file dialog). Returns a path or None."""
+    d = LibraryDialog(main, "script", pick=True, title=title, parent=parent)
+    d.exec()
+    if d.chosen is not None:
+        return d.chosen["path"]
+    if d.browse:
+        path, _ = QFileDialog.getOpenFileName(parent or main, title, "", storage.SCRIPT_FILTER)
+        return path or None
+    return None
+
+
+class LibraryHome(QWidget):
+    """Shown in place of an empty step list: favorites and recent scripts to pick up from."""
+
+    opened = Signal(dict)
+    library = Signal()
+
+    def __init__(self, main):
+        super().__init__()
+        self.main = main
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 4)
+        lay.setSpacing(6)
+        top = QHBoxLayout()
+        self.title = QLabel("Pick up where you left off")
+        self.title.setFont(font(11, QFont.Weight.DemiBold))
+        top.addWidget(self.title)
+        self.note = QLabel("or add a step above to start a new script")
+        self.note.setProperty("role", "detail")
+        top.addWidget(self.note)
+        top.addStretch(1)
+        b = GlassButton("Library...", icon="folder-open", small=True, tip="All your scripts and recordings (Ctrl+O)")
+        b.clicked.connect(self.library.emit)
+        top.addWidget(b)
+        lay.addLayout(top)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setFixedHeight(150 + 14)
+        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        self.row_holder = QWidget()
+        self.row = QHBoxLayout(self.row_holder)
+        self.row.setContentsMargins(0, 0, 0, 0)
+        self.row.setSpacing(8)
+        self.scroll.setWidget(self.row_holder)
+        lay.addWidget(self.scroll)
+        lay.addStretch(1)
+
+    def refresh(self):
+        """Returns True when there is something to show."""
+        lib = self.main.library
+        entries = [e for e in lib.list(kind="script") if not e.get("missing")]
+        entries = [e for e in entries if e.get("favorite")] + [e for e in entries if not e.get("favorite")]
+        while self.row.count():
+            it = self.row.takeAt(0)
+            if it.widget() is not None:
+                it.widget().hide()
+                it.widget().deleteLater()
+        for e in entries[:12]:
+            card = LibraryCard(lib, e, compact=True)
+            card.clicked.connect(lambda c: self.opened.emit(c.entry))
+            card.opened.connect(self.opened.emit)
+            self.row.addWidget(card)
+        self.row.addStretch(1)
+        return bool(entries)

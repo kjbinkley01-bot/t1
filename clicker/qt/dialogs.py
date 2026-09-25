@@ -16,8 +16,8 @@ from .widgets import Caption, GlassButton, GlassSwitch
 class GlassDialog(QDialog):
     """A frameless glass sheet over a frosted copy of what is behind it."""
 
-    def __init__(self, main, title):
-        super().__init__(main)
+    def __init__(self, main, title, parent=None):
+        super().__init__(parent or main)  # parent: another dialog this one opens over
         self.main = main
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)

@@ -4,7 +4,7 @@ import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QIcon
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QHeaderView, QLabel, QMenu, QSystemTrayIcon, QTreeWidget,
+from PySide6.QtWidgets import (QHBoxLayout, QHeaderView, QLabel, QMenu, QSystemTrayIcon, QTreeWidget,
                                QTreeWidgetItem)
 
 from .. import history, storage, target
@@ -179,7 +179,8 @@ class ScriptHotkeysDialog(dialogs.GlassDialog):
         self._assign()
 
     def _add_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a script", "", storage.SCRIPT_FILTER)
+        from .library_dialog import pick_script
+        path = pick_script(self.main, "Choose a script for a hotkey", parent=self)
         if path:
             self.add_path(path)
 

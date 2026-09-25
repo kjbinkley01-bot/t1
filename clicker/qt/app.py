@@ -1067,6 +1067,8 @@ class GlassApp(QMainWindow):
         try:
             self.library.touch(path, kind, info)
             self._save_library()
+            if hasattr(self, "action_tab"):
+                self.action_tab.update_home(force=True)
         except Exception as e:  # the Library is a convenience; never block opening or saving
             self.set_status(f"Could not update the Library: {e}", error=True)
 
