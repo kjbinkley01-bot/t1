@@ -245,6 +245,8 @@ class FlowChart(QGraphicsView):
                     moves.append((box, old[1], box.pos()))
             elif before:
                 fresh.append(box)
+        if before and len(fresh) == len(steps):
+            fresh = []  # nothing carried over (undo, a new script): just show it, no fading
         if moves or fresh:
             self._settle(moves, fresh, decor)
         w = right + 20 + (max(lanes) + 1 if lanes else 0) * 16 + 30

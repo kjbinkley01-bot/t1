@@ -65,6 +65,10 @@ class GlassDialog(QDialog):
             end.setX(max(scr.left(), min(end.x(), scr.right() - self.width())))
             end.setY(max(scr.top(), min(end.y(), scr.bottom() - self.height())))
         self._closing = False
+        shield = getattr(self, "_shield", None)
+        if shield is not None:  # shown again after closing
+            shield.deleteLater()
+            self._shield = None
         super().showEvent(e)
         if not glass.motion_on():
             self.move(end)
@@ -88,18 +92,31 @@ class GlassDialog(QDialog):
         rise = getattr(self, "_rise", None)
         if rise is not None:
             rise.stop()
+        # while it fades, a second click or Enter must not run Save (or anything else) again
+        shield = QWidget(self)
+        shield.setGeometry(self.rect())
+        shield.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        shield.show()
+        shield.raise_()
+        shield.setFocus()
+        self._shield = shield
         start = self.pos()
         glass.animate(self, 0.0, 1.0, glass.FAST, lambda v: (self.setWindowOpacity(1.0 - float(v)),
                                                             self.move(start + QPoint(0, round(8 * float(v))))),
                       curve=glass.EXIT, attr="_fade", done=lambda: QDialog.done(self, result))
 
     def keyPressEvent(self, e):
+        if getattr(self, "_closing", False):
+            return
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not isinstance(self.focusWidget(), QComboBox):
             self.accept()
             return
         super().keyPressEvent(e)
 
     def mousePressEvent(self, e):
+        rise = getattr(self, "_rise", None)
+        if rise is not None:
+            rise.stop()  # the user takes over the position
         self._drag = e.globalPosition().toPoint() - self.pos()
 
     def mouseMoveEvent(self, e):

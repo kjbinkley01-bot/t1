@@ -231,11 +231,16 @@ class Toast(QWidget):
             self._shot = glass.np_to_pixmap(_blur_pixmap(grab))
         except Exception:
             self._shot = None
-        self.move(end + QPoint(0, 18))
-        self.setWindowOpacity(0.0)
-        self.show()
-        glass.animate(self, 18.0, 0.0, glass.BASE, lambda v: self.move(end + QPoint(0, round(v))), attr="_slide")
-        glass.fade_in(self, glass.BASE)
+        if self.isVisible() and self.windowOpacity() > 0.5:
+            self.move(end)  # a notice replacing one still showing: just change the words, no flicker
+            glass.fade_in(self, glass.FAST, start=self.windowOpacity())
+        else:
+            self.move(end + QPoint(0, 18))
+            self.setWindowOpacity(0.0)
+            self.show()
+            glass.animate(self, 18.0, 0.0, glass.BASE, lambda v: self.move(end + QPoint(0, round(v))),
+                          attr="_slide")
+            glass.fade_in(self, glass.BASE)
         self._timer.start(ms) if ms else self._timer.stop()
 
     def hide_animated(self):

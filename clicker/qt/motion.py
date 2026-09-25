@@ -5,12 +5,13 @@ without each widget having to opt in.
 """
 
 from PySide6.QtCore import QEvent, QObject, Qt, QVariantAnimation
-from PySide6.QtWidgets import QAbstractItemView, QAbstractScrollArea, QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QGraphicsView, QMenu, QScrollArea, QWidget
 
 from . import glass
 
 SCROLL_MS = 220
 FADE_IN = {"QComboBoxPrivateContainer", "QTipLabel"}  # combo box lists and tooltips
+PIXEL_AREAS = (QScrollArea, QAbstractItemView, QGraphicsView)  # scroll bars measured in pixels (or made so)
 
 
 class _Glide:
@@ -80,8 +81,8 @@ class Motion(QObject):
         if not e.pixelDelta().isNull() or e.modifiers() or e.phase() != Qt.ScrollPhase.NoScrollPhase:
             return False
         area = obj.parent()
-        if not isinstance(area, QAbstractScrollArea) or obj is not area.viewport():
-            return False
+        if not isinstance(area, PIXEL_AREAS) or obj is not area.viewport():
+            return False  # text boxes scroll by whole lines: a glide there would jump, so leave them to Qt
         d = e.angleDelta()
         vertical = abs(d.y()) >= abs(d.x())
         notches = (d.y() if vertical else d.x()) / 120.0

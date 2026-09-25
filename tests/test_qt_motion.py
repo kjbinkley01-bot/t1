@@ -118,3 +118,39 @@ def test_scroll_to_jumps_become_glides(qapp):
     assert bar.value() > 0
     rect = tree.visualItemRect(target)
     assert 0 <= rect.top() < tree.viewport().height()  # and it ends with the item in view
+
+
+def test_text_boxes_scroll_the_usual_way(qapp):
+    from PySide6.QtWidgets import QPlainTextEdit
+    glass.set_motion(True)
+    ed = QPlainTextEdit("\n".join(str(i) for i in range(500)))
+    ed.resize(300, 200)
+    ed.show()
+    qapp.processEvents()
+    wheel(ed.viewport(), -120)
+    assert not hasattr(ed.verticalScrollBar(), "_clicker_glide")   # lines, not pixels: left to Qt
+    assert ed.verticalScrollBar().value() <= 10                     # a notch moves a few lines
+
+
+def test_reduced_motion_still_lands_on_the_end_value(qapp):
+    from PySide6.QtWidgets import QWidget
+    from clicker.qt.widgets import GlassButton, GlassSwitch
+    glass.set_motion(False)
+    try:
+        seen = []
+        assert glass.animate(QWidget(), 0.0, 1.0, 200, seen.append, done=lambda: seen.append("done")) is None
+        assert seen == [1.0, "done"]
+        s = GlassSwitch("x")
+        s.show()
+        s.toggle()
+        assert s._pos == 1.0                          # the knob moves
+        b = GlassButton("Stop")
+        b.show()
+        b.setEnabled(False)
+        assert b._dim == pytest.approx(0.55)          # disabled buttons dim
+        w = QWidget()
+        w.show()
+        glass.fade_in(w)
+        assert w.windowOpacity() == pytest.approx(1.0)  # faded windows are visible
+    finally:
+        glass.set_motion(True)

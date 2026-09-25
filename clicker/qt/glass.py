@@ -432,7 +432,11 @@ SPRING.setOvershoot(1.1)  # a gentle settle, not a bounce
 
 
 def animate(owner, start, end, ms, on_value, curve=EASE, done=None, attr="_anim"):
-    """Run a value animation, replacing any previous one stored on owner.attr."""
+    """Run a value animation, replacing any previous one stored on owner.attr.
+
+    With Reduce motion on it jumps straight to the end value (a zero length Qt animation would finish
+    without ever reporting it). Returns the animation, or None when there was nothing to animate.
+    """
     old = getattr(owner, attr, None)
     if old is not None:
         try:
@@ -440,10 +444,16 @@ def animate(owner, start, end, ms, on_value, curve=EASE, done=None, attr="_anim"
             old.deleteLater()  # otherwise every hover leaves an animation object behind
         except RuntimeError:
             pass  # its owner is already gone
+    if not motion_on() or ms <= 0:
+        setattr(owner, attr, None)
+        on_value(float(end))
+        if done:
+            done()
+        return None
     a = QVariantAnimation(owner)
     a.setStartValue(float(start))
     a.setEndValue(float(end))
-    a.setDuration(0 if not motion_on() else ms)
+    a.setDuration(ms)
     a.setEasingCurve(curve)
     a.valueChanged.connect(on_value)
     if done:

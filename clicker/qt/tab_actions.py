@@ -1098,9 +1098,9 @@ class ActionTab(QWidget):
             return
         total = sum(self.splitter.sizes())
         start = self.chart.width() if self.chart.isVisible() else 0
-        end = getattr(self, "_chart_w", 0) or int(total * 0.4)
+        end = max(self.chart.MIN_WIDTH, getattr(self, "_chart_w", 0) or int(total * 0.4))
         if not on:
-            self._chart_w, end = start, 0  # reopen at the width it had
+            self._chart_w, end = max(start, self.chart.MIN_WIDTH), 0  # reopen at the width it had
         else:
             self._fit_window()  # the window may need to grow first
         self.chart.setMinimumWidth(0)
