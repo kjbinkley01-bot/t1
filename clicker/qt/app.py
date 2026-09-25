@@ -355,6 +355,9 @@ class GlassApp(QMainWindow):
         self.remote_listener = None
         self.remote_state = "off"
         self.apply_remote()
+        self.web = None
+        self.web_state = "off"
+        self.apply_web()
         self.sampler = CursorSampler(self.post)
         self.sampler.start()
         self._poll_timer = QTimer(self)
@@ -742,6 +745,13 @@ class GlassApp(QMainWindow):
                 self._run_script_from_trigger(payload)
             elif kind == "remote":
                 self.handle_remote(payload)
+            elif kind == "web":
+                cmd, args, box, done = payload
+                try:
+                    box.append(self._web_command(cmd, args))
+                except Exception as e:
+                    box.append({"ok": False, "msg": str(e)})
+                done.set()
             elif kind == "remote_state":
                 self.remote_state = payload
             elif kind == "clip":
@@ -1078,6 +1088,72 @@ class GlassApp(QMainWindow):
             self.remote_state = "off"
         self.update_tray()
 
+    def apply_web(self):
+        """Start or stop the Wi-Fi dashboard to match the settings."""
+        from .. import webdash
+        if self.web is not None:
+            self.web.stop()
+            self.web = None
+        cfg = self.settings.get("web") or {}
+        if not (cfg.get("enabled") and len(str(cfg.get("pin") or "")) >= 4):
+            self.web_state = "off"
+            return
+        try:
+            self.web = webdash.Dashboard(int(cfg.get("port") or 8765), cfg["pin"], self.web_call).start()
+            self.web_state = "on at " + ", ".join(f"http://{ip}:{self.web.port}" for ip in webdash.lan_addresses())
+        except OSError as e:
+            self.web_state = f"could not start ({e})"
+        self.update_tray()
+
+    def web_call(self, cmd, args):
+        """From a web request thread: run a dashboard command on the window thread and wait for it."""
+        box, done = [], threading.Event()
+        self.post("app", "web", (cmd, args, box, done))
+        if not done.wait(8.0):
+            return {"ok": False, "msg": "Clicker is busy; try again"}
+        return box[0]
+
+    def _web_command(self, cmd, args):
+        import platform
+
+        from .. import history, remote
+        from .runs import job_line, job_name
+        allowed = [p for p in (self.settings.get("remote") or {}).get("allowed") or [] if os.path.exists(p)]
+        runs = self.all_runs()
+        if cmd == "status":
+            hist = []
+            for e in reversed(history.load()[-6:]):
+                import datetime as _dt
+                hist.append({"script": e.get("script"), "result": e["result"],
+                             "when": _dt.datetime.fromtimestamp(e["ts"]).strftime("%b %d %H:%M"),
+                             "time": history.fmt_duration(e.get("seconds"))})
+            return {"machine": platform.node(), "history": hist,
+                    "runs": [{"id": str(id(j)), "name": job_name(j), "line": job_line(j), "paused": j.paused,
+                              "main": m} for j, m in runs],
+                    "scripts": [os.path.splitext(os.path.basename(p))[0] for p in allowed]}
+        if cmd == "start":
+            path, err = remote.match_script(str(args.get("name", "")), allowed)
+            if err:
+                return {"ok": False, "msg": err}
+            self.run_script_hotkey(path, from_menu=True)
+            ok = any(getattr(j, "path", None) == path for j, _m in self.all_runs())
+            name = os.path.splitext(os.path.basename(path))[0]
+            return {"ok": ok, "msg": f"Started {name}." if ok else f"Could not start {name} now."}
+        if cmd in ("stop", "pause"):
+            want = str(args.get("id", ""))
+            if cmd == "stop" and want == "all":
+                self.stop_all()
+                return {"ok": True, "msg": "Stopped everything."}
+            for j, _m in runs:
+                if str(id(j)) == want:
+                    j.stop() if cmd == "stop" else j.toggle_pause()
+                    return {"ok": True, "msg": f"{'Stopped' if cmd == 'stop' else 'Paused or resumed'} {job_name(j)}."}
+            return {"ok": False, "msg": "That run has already ended."}
+        if cmd == "screenshot":
+            img, _o = vision.capture(None)
+            return vision.encode_png(img)
+        return {"ok": False, "msg": "unknown command"}
+
     def remote_reply(self, title, text, image=None, topic=None):
         from .. import remote
         topic = topic or (self.settings.get("remote") or {}).get("topic")
@@ -1191,7 +1267,8 @@ class GlassApp(QMainWindow):
     def update_tray(self):
         if (self.settings.get("tray_on_close") or scripthotkeys.bindings(self.settings)
                 or any(e.get("enabled") for e in self.settings.get("schedule") or [])
-                or (self.settings.get("remote") or {}).get("enabled")):
+                or (self.settings.get("remote") or {}).get("enabled")
+                or (self.settings.get("web") or {}).get("enabled")):
             self.tray.ensure()
         else:
             self.tray.hide()
@@ -1376,6 +1453,8 @@ class GlassApp(QMainWindow):
         self._poll_timer.stop()
         self._autosave_timer.stop()
         self._sched_timer.stop()
+        if self.web is not None:
+            self.web.stop()
         if self.remote_listener is not None:
             self.remote_listener.stop()
         self.stop_job()

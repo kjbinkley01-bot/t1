@@ -61,6 +61,27 @@ class RemoteDialog(dialogs.GlassDialog):
             arow.addWidget(b)
         arow.addStretch(1)
         self.body.addLayout(arow)
+        self.body.addWidget(Caption("Web page on your Wi-Fi"))
+        web = dict(main.settings.get("web") or {})
+        self.sw_web = GlassSwitch("Show a control page to phones and PCs on my home network")
+        self.sw_web.setChecked(bool(web.get("enabled")))
+        self.body.addWidget(self.sw_web)
+        wrow = QHBoxLayout()
+        wrow.addWidget(QLabel("PIN"))
+        self.e_wpin = QLineEdit(web.get("pin", ""))
+        self.e_wpin.setPlaceholderText("at least 4 digits")
+        self.e_wpin.setFixedWidth(130)
+        wrow.addWidget(self.e_wpin)
+        wrow.addWidget(QLabel("Port"))
+        self.e_port = QLineEdit(str(web.get("port", 8765)))
+        self.e_port.setFixedWidth(80)
+        wrow.addWidget(self.e_port)
+        wrow.addStretch(1)
+        self.body.addLayout(wrow)
+        self.body.addWidget(detail("Open the address below in your phone's browser while it's on the same Wi-Fi. "
+                                   "Only local devices can connect, and it asks for the PIN. Windows may ask to "
+                                   "allow Clicker through the firewall the first time: allow Private networks. "
+                                   f"Now: {main.web_state}."))
         self.msg = detail("Commands: help, status, list, start NAME, stop, pause, resume, screenshot.")
         self.body.addWidget(self.msg)
         test = GlassButton("Send a test message", small=True)
@@ -109,8 +130,23 @@ class RemoteDialog(dialogs.GlassDialog):
         if topic and topic == alerts_topic:
             self.msg.setText("Use a different topic from your alerts topic.")
             return
+        wpin = self.e_wpin.text().strip()
+        if self.sw_web.isChecked() and (len(wpin) < 4 or not wpin.isdigit()):
+            self.msg.setText("The web page needs a PIN of at least 4 digits.")
+            return
+        try:
+            port = int(self.e_port.text() or 8765)
+            if not 1024 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            self.msg.setText("The port must be a number from 1024 to 65535.")
+            return
         self.main.settings["remote"] = {"enabled": self.sw_on.isChecked(), "topic": topic,
                                         "pin": self.e_pin.text().strip(), "allowed": self._paths()}
+        self.main.settings["web"] = {"enabled": self.sw_web.isChecked(), "pin": wpin, "port": port}
         self.main.save_settings()
         self.main.apply_remote()
+        self.main.apply_web()
+        if self.sw_web.isChecked():
+            self.main.set_status(f"Web dashboard: {self.main.web_state}")
         super().accept()
