@@ -1,4 +1,4 @@
-"""App wide motion: smooth mouse wheel scrolling and popups that fade in.
+"""App wide motion: smooth scrolling (mouse wheel and scroll-to jumps) and popups that fade in.
 
 Installed once on the application, so every scroll area, list, menu and combo box gets it
 without each widget having to opt in.
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QAbstractItemView, QAbstractScrollArea, QApplicati
 from . import glass
 
 SCROLL_MS = 220
+FADE_IN = {"QComboBoxPrivateContainer", "QTipLabel"}  # combo box lists and tooltips
 
 
 class _Glide:
@@ -24,12 +25,42 @@ class _Glide:
 
     def add(self, delta):
         base = self.target if self.anim.state() == QVariantAnimation.State.Running else self.bar.value()
-        self.target = max(self.bar.minimum(), min(self.bar.maximum(), base + delta))
+        self.to(base + delta)
+
+    def to(self, value, start=None):
+        """Glide to value, from start (default: where the bar is now)."""
+        self.target = max(self.bar.minimum(), min(self.bar.maximum(), value))
         self.anim.stop()
         self.anim.setDuration(SCROLL_MS)
-        self.anim.setStartValue(float(self.bar.value()))
+        self.anim.setStartValue(float(self.bar.value() if start is None else start))
         self.anim.setEndValue(float(self.target))
         self.anim.start()
+
+
+def _glide(bar):
+    g = getattr(bar, "_clicker_glide", None)
+    if g is None:
+        g = bar._clicker_glide = _Glide(bar)
+    return g
+
+
+def smoothly(area, jump):
+    """Run jump(), which scrolls area instantly (scrollToItem, ensureVisible...), as a glide instead."""
+    if isinstance(area, QAbstractItemView):  # glide in pixels, not whole rows
+        area.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    bars = (area.verticalScrollBar(), area.horizontalScrollBar())
+    before = [b.value() for b in bars]
+    jump()
+    if not glass.motion_on():
+        return
+    for bar, v0 in zip(bars, before):
+        v1 = bar.value()
+        if v1 != v0:
+            g = _glide(bar)
+            if g.anim.state() == QVariantAnimation.State.Running:
+                v0 = g.anim.currentValue()  # already gliding: carry on from where it is
+            bar.setValue(round(v0))  # nothing was painted in between, so the jump is never seen
+            g.to(v1, start=v0)
 
 
 class Motion(QObject):
@@ -40,7 +71,7 @@ class Motion(QObject):
         if t == QEvent.Type.Wheel and glass.motion_on():
             return self._wheel(obj, e)
         if t == QEvent.Type.Show and glass.motion_on() and isinstance(obj, QWidget) and obj.isWindow() and (
-                isinstance(obj, QMenu) or obj.metaObject().className() == "QComboBoxPrivateContainer"):
+                isinstance(obj, QMenu) or obj.metaObject().className() in FADE_IN):
             glass.fade_in(obj, glass.FAST)
         return False
 
@@ -71,10 +102,7 @@ class Motion(QObject):
             step = max(row, 20)
         else:
             step = max(bar.singleStep(), 20)
-        glide = getattr(bar, "_clicker_glide", None)
-        if glide is None:
-            glide = bar._clicker_glide = _Glide(bar)
-        glide.add(-notches * QApplication.wheelScrollLines() * step)
+        _glide(bar).add(-notches * QApplication.wheelScrollLines() * step)
         e.accept()
         return True
 

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QGridLayout, QHB
 from .. import model, storage, target
 from ..runner import Runner
 from ..storage import AssetStore
-from . import dialogs, glass
+from . import dialogs, glass, motion
 from .glass import GlassPanel, font
 from .runin import RunInButton
 from .tab_triggers import pixmap_from_bgr
@@ -471,7 +471,7 @@ class ImportTab(QWidget):
         if kind == "step" and 0 <= payload < self.tree.topLevelItemCount():
             it = self.tree.topLevelItem(payload)
             self.tree.setCurrentItem(it)
-            self.tree.scrollToItem(it)
+            motion.smoothly(self.tree, lambda: self.tree.scrollToItem(it))
         elif kind == "done":
             ok, reason = payload
             if self.pending_real:

@@ -99,3 +99,22 @@ def test_disabling_a_button_dims_it_gradually(qapp):
     assert 0.55 < b._dim <= 1.0
     pump(qapp, glass.FAST + 150)
     assert b._dim == pytest.approx(0.55)
+
+
+def test_scroll_to_jumps_become_glides(qapp):
+    from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+    glass.set_motion(True)
+    tree = QTreeWidget()
+    for i in range(300):
+        QTreeWidgetItem(tree, [str(i)])
+    tree.resize(300, 300)
+    tree.show()
+    qapp.processEvents()
+    bar = tree.verticalScrollBar()
+    target = tree.topLevelItem(250)
+    motion.smoothly(tree, lambda: tree.scrollToItem(target))
+    assert bar.value() == 0                     # the jump itself is never shown
+    pump(qapp, motion.SCROLL_MS + 150)
+    assert bar.value() > 0
+    rect = tree.visualItemRect(target)
+    assert 0 <= rect.top() < tree.viewport().height()  # and it ends with the item in view

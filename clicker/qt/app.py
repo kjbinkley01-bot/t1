@@ -161,6 +161,29 @@ class PageTransition(QWidget):
         p.end()
 
 
+class FadeAway(QWidget):
+    """A snapshot of how the window looked, fading out over the new look (appearance changes)."""
+
+    def __init__(self, parent, pm):
+        super().__init__(parent)
+        self.pm, self.t = pm, 1.0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setGeometry(parent.rect())
+        self.show()
+        self.raise_()
+        glass.animate(self, 1.0, 0.0, glass.SLOW, self._step, curve=glass.GLIDE, done=self.deleteLater)
+
+    def _step(self, v):
+        self.t = float(v)
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setOpacity(self.t)
+        p.drawPixmap(0, 0, self.pm)
+        p.end()
+
+
 def page_snapshot(area):
     """The page's contents on a transparent background (no wallpaper), for sliding transitions."""
     dpr = area.devicePixelRatioF()
@@ -587,6 +610,14 @@ class GlassApp(QMainWindow):
         m.addAction(motion)
         m.exec(self.btn_style.mapToGlobal(QPoint(0, self.btn_style.height() + 6)))
 
+    def _cross_fade(self, change):
+        """Make an appearance change (wallpaper, light or dark glass) fade in instead of snapping."""
+        surface = self.centralWidget()
+        before = surface.grab() if glass.motion_on() and self.isVisible() else None
+        change()
+        if before is not None:
+            FadeAway(surface, before)
+
     def _apply_mode(self, dark):
         self.mode = Mode(dark)
         apply_style(QApplication.instance(), self.mode)
@@ -601,8 +632,8 @@ class GlassApp(QMainWindow):
         self.settings["wallpaper"] = key
         self.settings.pop("wallpaper_image", None)
         self.save_settings()
-        self.backdrop.set_scene(key)
-        self._apply_mode(glass.WALLPAPER_DARK.get(key, True))
+        self._cross_fade(lambda: (self.backdrop.set_scene(key),
+                                  self._apply_mode(glass.WALLPAPER_DARK.get(key, True))))
 
     def pick_wallpaper_image(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose a wallpaper", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp)")
@@ -610,13 +641,13 @@ class GlassApp(QMainWindow):
             return
         self.settings["wallpaper_image"] = path
         self.save_settings()
-        self.backdrop.set_scene(self.wallpaper, path)
-        self._apply_mode(self.settings.get("glass_dark", True))
+        self._cross_fade(lambda: (self.backdrop.set_scene(self.wallpaper, path),
+                                  self._apply_mode(self.settings.get("glass_dark", True))))
 
     def set_glass_dark(self, on):
         self.settings["glass_dark"] = bool(on)
         self.save_settings()
-        self._apply_mode(bool(on))
+        self._cross_fade(lambda: self._apply_mode(bool(on)))
 
     def set_reduce_motion(self, on):
         glass.set_motion(not on)

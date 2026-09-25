@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
 from .. import editing, flow, formlogic, inputs, model, runlog, storage, target, vision
 from ..runner import Runner
 from ..storage import AssetStore
-from . import dialogs, glass
+from . import dialogs, glass, motion
 from .flowview import FlowPanel, FlowRail
 from .glass import GlassPanel, font
 from .thumbs import ImageStrip, step_icon
@@ -1183,7 +1183,7 @@ class ActionTab(QWidget):
             for i in want:
                 tree.topLevelItem(i).setSelected(True)
             if want:
-                tree.scrollToItem(tree.topLevelItem(want[-1]))
+                motion.smoothly(tree, lambda: tree.scrollToItem(tree.topLevelItem(want[-1])))
                 tree.setCurrentItem(tree.topLevelItem(want[0]), 0,
                                     tree.selectionModel().SelectionFlag.NoUpdate)
         tree.blockSignals(False)
@@ -1206,7 +1206,7 @@ class ActionTab(QWidget):
                 texts, flag = self._rows[idx]
                 self._paint_row(self.tree.topLevelItem(idx), texts, flag, idx == i)
         if i is not None and i < self.tree.topLevelItemCount():
-            self.tree.scrollToItem(self.tree.topLevelItem(i))
+            motion.smoothly(self.tree, lambda: self.tree.scrollToItem(self.tree.topLevelItem(i)))
         if self.chart.isVisible():
             self.chart.set_running(i)
 
@@ -1671,7 +1671,6 @@ class ActionTab(QWidget):
             self.lbl_debug.setText(f"Paused before step {i + 1} ({why}). Continue (F5) or Step (F10).")
             self.debug_bar.show()
             self.mark_running(i)
-            self.tree.scrollToItem(self.tree.topLevelItem(i)) if self.tree.topLevelItem(i) else None
             self.vars_panel.refresh()
         elif kind == "state" and payload == "running":
             self.debug_bar.hide()

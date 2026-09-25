@@ -481,7 +481,9 @@ def caret_file(color):
 
 
 def apply_style(app, m):
-    app.setStyleSheet(stylesheet(m))
+    qss = stylesheet(m)
+    if qss != app.styleSheet():  # restyling every widget is slow; switching between two dark wallpapers needn't
+        app.setStyleSheet(qss)
     app.setFont(font(10))
 
 

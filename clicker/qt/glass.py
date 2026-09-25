@@ -184,8 +184,20 @@ def render_scene(name, w, h):
         img = img * (1 - a[..., None]) + _hex_rgb(col) * a[..., None]
     img = cv2.GaussianBlur(img, (0, 0), max(1.0, min(sw, sh) * 0.04))
     img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
-    noise = np.random.default_rng(7).normal(0, 1.2, (h, w, 1)).astype(np.float32)  # tiny grain, no banding
-    return np.clip(img + noise, 0, 255).astype(np.uint8)
+    img += _grain(w, h)  # tiny grain, no banding
+    return np.clip(img, 0, 255, out=img).astype(np.uint8)
+
+
+_grain_cache = {}
+
+
+def _grain(w, h):
+    """The same fine noise every time for a size (making it is most of a wallpaper's render time)."""
+    g = _grain_cache.get((w, h))
+    if g is None:
+        _grain_cache.clear()
+        g = _grain_cache[(w, h)] = np.random.default_rng(7).normal(0, 1.2, (h, w, 1)).astype(np.float32)
+    return g
 
 
 def load_image_cover(path, w, h):

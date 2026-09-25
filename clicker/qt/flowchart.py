@@ -9,7 +9,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsObject, QGraphicsScene, QGraphicsView
 
 from .. import flow, model
-from . import glass
+from . import glass, motion
 from .flowview import color
 from .glass import font
 
@@ -297,7 +297,7 @@ class FlowChart(QGraphicsView):
         if rows:
             first = min(rows)
             if first < len(self.boxes):
-                self.ensureVisible(self.boxes[first], 20, 40)
+                motion.smoothly(self, lambda: self.ensureVisible(self.boxes[first], 20, 40))
 
     def set_running(self, row):
         for b in self.boxes:
@@ -306,7 +306,7 @@ class FlowChart(QGraphicsView):
                 b.running = on
                 b.update()
         if row is not None and 0 <= row < len(self.boxes):
-            self.ensureVisible(self.boxes[row], 20, 60)
+            motion.smoothly(self, lambda: self.ensureVisible(self.boxes[row], 20, 60))
 
     # ------------------------------------------------------------ interactions
 
