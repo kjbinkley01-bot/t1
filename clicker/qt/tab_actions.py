@@ -77,6 +77,17 @@ class StepProgress(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
+        if index.column() == 0:
+            steps = self.tab.script["steps"]
+            r = index.row()
+            if 0 <= r < len(steps) and steps[r].get("bp"):
+                painter.save()
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#ff453a"))
+                rr = option.rect
+                painter.drawEllipse(QRectF(rr.right() - 14, rr.center().y() - 5, 10, 10))
+                painter.restore()
         st = self._state(index.row())
         if not st:
             return
@@ -109,6 +120,65 @@ class StepProgress(QStyledItemDelegate):
             painter.setBrush(QColor(255, 255, 255, 170))
             painter.drawRoundedRect(glow, 1.5, 1.5)
         painter.restore()
+
+
+class VarsPanel(QWidget):
+    """Live variables of the running script (and the last run's final values)."""
+
+    def __init__(self, tab):
+        super().__init__()
+        self.tab = tab
+        self.setFixedWidth(250)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 6, 4, 4)
+        lay.setSpacing(6)
+        h = QHBoxLayout()
+        h.addWidget(Caption("Variables"))
+        h.addStretch(1)
+        b = GlassButton("Hide", small=True)
+        b.clicked.connect(self.hide)
+        h.addWidget(b)
+        lay.addLayout(h)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Name", "Value"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setColumnWidth(0, 96)
+        lay.addWidget(self.tree, 1)
+        self.note = QLabel("Run the script to see its variables change.")
+        self.note.setProperty("role", "detail")
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        self._last = None
+        self.timer = QTimer(self)
+        self.timer.setInterval(300)
+        self.timer.timeout.connect(self.refresh)
+
+    def refresh(self, show=False, final=False):
+        if show:
+            self.show()
+        job = self.tab.main.job if self.tab.main.job_owner is self.tab else None
+        if job is None or not hasattr(job, "values"):
+            self.timer.stop()
+            return
+        if self.isVisible() and not final:
+            self.timer.start()
+        if final:
+            self.timer.stop()
+        try:
+            vals = dict(job.values)
+        except RuntimeError:  # changed while copying; next tick
+            return
+        vals = {k: v for k, v in vals.items() if not k.startswith("_")}
+        if vals == self._last:
+            return
+        self._last = vals
+        self.tree.clear()
+        for k in sorted(vals):
+            it = QTreeWidgetItem([k, str(vals[k])])
+            it.setToolTip(1, str(vals[k]))
+            self.tree.addTopLevelItem(it)
+        self.note.setText("Final values of the last run." if final else
+                          f"{len(vals)} variable{'s' if len(vals) != 1 else ''}, updating live.")
 
 
 class _DragFilter(QObject):
@@ -460,12 +530,33 @@ class ActionTab(QWidget):
         self.tree.verticalScrollBar().valueChanged.connect(lambda _v: self.rail.update())
         self.tree.itemSelectionChanged.connect(self.rail.update)
         self.tree.itemExpanded.connect(lambda _i: self.rail.update())
+        self.debug_bar = QWidget()
+        dbl = QHBoxLayout(self.debug_bar)
+        dbl.setContentsMargins(4, 0, 4, 4)
+        dbl.setSpacing(8)
+        self.lbl_debug = QLabel("")
+        self.lbl_debug.setProperty("role", "warn")
+        dbl.addWidget(self.lbl_debug)
+        dbl.addStretch(1)
+        for text, ic, cmd, tip in (("Continue", "play", self.debug_continue, "Run on to the next breakpoint (F5)"),
+                                   ("Step", "arrow-down", self.debug_step, "Run this one step (F10)"),
+                                   ("Stop", "stop", lambda: self.main.stop_job(), "Stop the run")):
+            b = GlassButton(text, icon=ic, small=True, kind="primary" if text == "Continue" else "glass", tip=tip)
+            b.clicked.connect(cmd)
+            dbl.addWidget(b)
+        self.debug_bar.hide()
+        sl.addWidget(self.debug_bar)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
+        self.vars_panel = VarsPanel(self)
+        self.vars_panel.hide()
         body = QHBoxLayout()
         body.setSpacing(0)
         body.addWidget(self.rail)
         body.addWidget(self.tree, 1)
         body.addSpacing(8)
         body.addWidget(self.flow_panel)
+        body.addWidget(self.vars_panel)
         sl.addLayout(body, 1)
         self.flow_on = bool(self.main.settings.get("show_flow", True))
         mid.addWidget(sp, 1)
@@ -907,6 +998,11 @@ class ActionTab(QWidget):
         on_tree("Delete", self.delete_step)
         on_tree("Alt+Up", lambda: self.move(-1))
         on_tree("Alt+Down", lambda: self.move(1))
+        on_tree("F9", self.toggle_breakpoint)
+        for seq, fn in (("F5", self.debug_continue), ("F10", self.debug_step)):
+            s = QShortcut(QKeySequence(seq), self)
+            s.setContext(ctx)
+            s.activated.connect(fn)
 
         def not_typing(fn):
             def run():
@@ -1305,6 +1401,92 @@ class ActionTab(QWidget):
                       random_delay_ms=st.get("random_delay_ms", 0), dry_run=dry, start_delay=start_delay,
                       label=label_text, save_log=self.main.settings.get("save_run_logs", True), path=self.path)
 
+    # ------------------------------------------------------------ debugging
+
+    def _my_job(self):
+        return self.main.job if self.main.job_running_for(self) else None
+
+    def toggle_breakpoint(self):
+        sel = self._selection()
+        if not sel:
+            return
+        on = not all(self.script["steps"][i].get("bp") for i in sel)
+        job = self._my_job()
+        for i in sel:
+            if on:
+                self.script["steps"][i]["bp"] = True
+                if job:
+                    job.breakpoints.add(i)
+            else:
+                self.script["steps"][i].pop("bp", None)
+                if job:
+                    job.breakpoints.discard(i)
+        self.tree.viewport().update()
+        self.main.set_status(f"Breakpoint {'on' if on else 'off'} at step {', '.join(str(i + 1) for i in sel)}")
+
+    def clear_breakpoints(self):
+        for st in self.script["steps"]:
+            st.pop("bp", None)
+        job = self._my_job()
+        if job:
+            job.breakpoints.clear()
+        self.tree.viewport().update()
+
+    def _tree_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        item = self.tree.itemAt(pos)
+        i = self.tree.indexOfTopLevelItem(item) if item is not None else -1
+        m = QMenu(self)
+        if i >= 0:
+            if i not in self._selection():
+                self.select_step(i)
+            has = bool(self.script["steps"][i].get("bp"))
+            m.addAction(("Remove breakpoint" if has else "Add breakpoint") + "\tF9", self.toggle_breakpoint)
+            m.addAction(f"Run from step {i + 1}", lambda: self.debug_start(start_at=i))
+            m.addAction(f"Run to step {i + 1}, then pause", lambda: self.debug_start(run_to=i))
+            m.addAction("Test this step", self.test_step)
+            m.addSeparator()
+        if any(st.get("bp") for st in self.script["steps"]):
+            m.addAction("Clear all breakpoints", self.clear_breakpoints)
+        m.addAction("Show variables", lambda: self.vars_panel.refresh(show=True))
+        m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def debug_start(self, start_at=0, run_to=None):
+        job = self._my_job()
+        if job is not None:  # already running: move the pause point
+            job.run_to = run_to
+            if job.paused:
+                job.resume()
+            return
+        if self.main.job_running():
+            self.main.set_status("Something else is running.", error=True)
+            return
+        self.sync_settings()
+        problems = [m for lvl, m in storage.validate(self.script, self.assets) if lvl == "error"]
+        if problems:
+            QMessageBox.warning(self, "Script has problems", "\n".join(problems))
+            return
+        job = self._runner(self.script, 0.5)
+        if job:
+            job.start_at = start_at
+            job.run_to = run_to
+            if self.main.start_job(job, self):
+                self.vars_panel.refresh(show=True)
+
+    def debug_continue(self):
+        job = self._my_job()
+        if job is not None and job.paused:
+            job.resume()
+
+    def debug_step(self):
+        job = self._my_job()
+        if job is not None:
+            if job.paused:
+                job.step_once()
+        elif self.script["steps"]:
+            sel = self._selection()
+            self.debug_start(start_at=sel[0] if sel else 0, run_to=sel[0] if sel else 0)
+
     def toggle_run(self, from_hotkey=False):
         if self.main.job_running_for(self):
             self.main.stop_job()
@@ -1389,6 +1571,18 @@ class ActionTab(QWidget):
             self._set_progress(None)
 
     def on_job(self, kind, payload):
+        if kind == "debug":
+            i = payload["step"]
+            why = {"breakpoint": "at a breakpoint", "step": "after one step", "run to": "where you asked"}[payload["why"]]
+            self.lbl_debug.setText(f"Paused before step {i + 1} ({why}). Continue (F5) or Step (F10).")
+            self.debug_bar.show()
+            self.mark_running(i)
+            self.tree.scrollToItem(self.tree.topLevelItem(i)) if self.tree.topLevelItem(i) else None
+            self.vars_panel.refresh()
+        elif kind == "state" and payload == "running":
+            self.debug_bar.hide()
+            if self.vars_panel.isVisible():
+                self.vars_panel.refresh()
         if kind == "step":
             if self.progress and self.progress["step"] != payload:
                 self._set_progress(None)
@@ -1400,6 +1594,8 @@ class ActionTab(QWidget):
         elif kind == "done":
             self._set_progress(None)
             self.mark_running(None)
+            self.debug_bar.hide()
+            self.vars_panel.refresh(final=True)
 
     def update_state(self, running_mine, running_any, paused):
         for b in (self.btn_start, self.btn_start2):

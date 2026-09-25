@@ -263,7 +263,12 @@ class Runner(Job):
         self.history_path = history_path or (os.path.join(log_dir, "history.jsonl") if log_dir else None)
         self.fail_step = None
         self.started_at = None
+        # debugging: pause before these top level steps / the next step / one step; start somewhere else
+        self.debug_step = False
+        self.run_to = None
+        self.start_at = 0
         self.script = model.copy_script(script)
+        self.breakpoints = {i for i, st in enumerate(self.script["steps"]) if st.get("bp")}
         self.assets = assets
         self.values = dict(inputs_map or {})
         self.speed = max(0.05, float(speed or 1.0))
@@ -494,10 +499,14 @@ class Runner(Job):
             if depth == 0 and self._rewind:
                 i = max(0, i - self._rewind)
                 self._rewind = 0
+            if depth == 0 and self.start_at:
+                i, self.start_at = min(self.start_at, n - 1), 0
             step = steps[i]
             if depth == 0:
                 self.current = i
                 self.show_step(i)
+                if self.debug_step or i in self.breakpoints or self.run_to == i:
+                    self._debug_pause(i)
             if step.get("disabled"):
                 i += 1
                 continue
@@ -523,6 +532,24 @@ class Runner(Job):
                 break
             else:
                 raise ScriptFailed(f"Step {i + 1}: unknown result {kind}")
+
+    def _debug_pause(self, i):
+        """Stop before step i until Continue or Step (a breakpoint, Run to here, or single stepping)."""
+        why = "breakpoint" if i in self.breakpoints else ("step" if self.debug_step else "run to")
+        self.debug_step = False
+        if self.run_to == i:
+            self.run_to = None
+        self.flush_step()
+        self._user_pause = True
+        self.emit("debug", {"step": i, "why": why})
+        self.emit("state", "paused")
+        self.gate()
+        self.check_stop()
+
+    def step_once(self):
+        """Run the next step, then pause again."""
+        self.debug_step = True
+        self.resume()
 
     def _breathe(self):
         """Give other threads a moment during long runs of zero delay steps.
