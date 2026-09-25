@@ -322,6 +322,8 @@ class GlassApp(QMainWindow):
         self.hotkeys = HotkeyManager(lambda kind, payload: self.post("hotkey", kind, payload),
                                      self.settings["hotkeys"], scripthotkeys.bindings(self.settings))
         self.script_hotkey_dialog = None
+        from .ministatus import MiniStatus
+        self.mini = MiniStatus(self)
         clipboard.set_backend(QtClipboard(self))
         self.tray = scripthotkeys.Tray(self)
         self._quitting = False
@@ -662,6 +664,8 @@ class GlassApp(QMainWindow):
         else:
             state = "Ready"
         self.lbl_state.setText(state)
+        if hasattr(self, "mini"):
+            self.mini.sync()
         n = sum(1 for r in self.rules if r.get("enabled"))
         self.lbl_trig.setText(f"Monitoring {n} rule{'s' if n != 1 else ''}" if self.triggers.running
                               else "Monitoring off")
@@ -1111,6 +1115,21 @@ class GlassApp(QMainWindow):
                 self.set_status(f"Could not recover the script: {e}", error=True)
         self._clear_autosave()
 
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() == e.Type.WindowStateChange and hasattr(self, "mini"):
+            QTimer.singleShot(0, self.mini.sync)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        if hasattr(self, "mini"):
+            QTimer.singleShot(0, self.mini.sync)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if hasattr(self, "mini"):
+            QTimer.singleShot(0, self.mini.sync)
+
     def closeEvent(self, e):
         if (not self._quitting and self.settings.get("tray_on_close")
                 and self.tray.ensure()):
@@ -1136,6 +1155,7 @@ class GlassApp(QMainWindow):
         self.sampler.stop()
         self.toast.close()
         self.highlight.close()
+        self.mini.close()
         if self.recording_active():
             self.recorder_tab.recorder.stop()
         self._clear_autosave()

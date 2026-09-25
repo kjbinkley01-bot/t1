@@ -313,6 +313,13 @@ class SettingsDialog(GlassDialog):
         main.refresh_hotkey_displays()
         self.finished.connect(self._forget_fields)
         self.body.addSpacing(6)
+        self.body.addWidget(Caption("Mini status window"))
+        from .ministatus import MODE_LABEL, MODES
+        self.cb_mini = QComboBox()
+        self.cb_mini.addItems([m[1] for m in MODES])
+        self.cb_mini.setCurrentText(MODE_LABEL.get(s.get("mini_status", "hidden")))
+        self.body.addWidget(self.cb_mini)
+        self.body.addSpacing(6)
         self.body.addWidget(Caption("Motion"))
         self.sw_motion = GlassSwitch("Reduce motion (no sliding or fading)")
         self.sw_motion.setChecked(s.get("reduce_motion", False))
@@ -393,6 +400,8 @@ class SettingsDialog(GlassDialog):
         s = self.main.settings
         s["save_run_logs"] = self.sw_logs.isChecked()
         s["check_updates"] = self.sw_upd.isChecked()
+        from .ministatus import MODE_ID
+        s["mini_status"] = MODE_ID.get(self.cb_mini.currentText(), "hidden")
         self.main.set_reduce_motion(self.sw_motion.isChecked())
         self.main.save_settings()
         super().accept()
