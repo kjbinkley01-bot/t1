@@ -242,7 +242,8 @@ ACTION_HINTS = {
     "Call Subroutine": "Jumps to a step or label, and Return comes back here. End the main part with Return.",
     "Return": "Goes back to the step after the last Call Subroutine. Outside a subroutine it ends this pass.",
     "Read Text": "Reads the text in the region (OCR) into a variable. Needs Tesseract installed.",
-    "Set Variable": "Use {name} anywhere text is typed to insert the value. Other {variables} work here too.",
+    "Set Variable": "Use {name} anywhere text is typed to insert the value. Start the value with = to work it "
+                    "out: = {count} * 2, = upper({name}), = round({price} * 1.05, 2). {= ...} works inside any text.",
     "Increment Variable": "Adds the amount (use a negative number to subtract). Blank variables start at 0.",
     "If Variable": "Numbers compare as numbers; anything else compares as text.",
     "While Image Found": "Repeats the steps down to End While as long as the image is on screen.",
@@ -787,6 +788,20 @@ def check_step(step, steps=None, labels=None):
              "Copy Clipboard to Variable"):
         if not NAME_RE.match(str(step.get("var") or "")):
             return "Enter a variable name (letters, digits and _)."
+    from . import expr
+    raw = str(step.get("value") or "")
+    if a == "Set Variable" and raw.lstrip().startswith("="):
+        try:
+            expr.parse(raw.lstrip()[1:])
+        except expr.ExprError as e:
+            return f"Expression: {e}."
+    for v in step.values():
+        if isinstance(v, str) and "{=" in v:
+            for _a, _b, src in expr.inline_spans(v):
+                try:
+                    expr.parse(src)
+                except expr.ExprError as e:
+                    return f"In {{= {_short(src, 20)}}}: {e}."
     if a in ("If Variable", "While Variable") and step.get("op", "=") not in COMPARE_OPS:
         return f"Unknown comparison '{step.get('op')}'."
     lab = str(step.get("label") or "").strip()

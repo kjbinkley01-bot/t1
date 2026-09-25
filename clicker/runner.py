@@ -12,7 +12,7 @@ import threading
 import time
 import webbrowser
 
-from . import clipboard, datafile, history, inputs, model, runlog, storage, target, vision
+from . import clipboard, datafile, expr, history, inputs, model, runlog, storage, target, vision
 
 
 PROGRESS_MIN_S = 0.15  # shorter pauses would only flicker a progress bar
@@ -306,11 +306,22 @@ class Runner(Job):
         if self.run_log:
             self.run_log.write(msg, detail)
 
-    def substitute(self, text):
+    def _all_values(self):
         base = builtin_values()
         base["run"] = str(self.run_number)
         vals = dict(base)
         vals.update({k: substitute(v, base) for k, v in self.values.items()})
+        return vals
+
+    def substitute(self, text):
+        """Fill in {= expressions} and then {variables}."""
+        vals = self._all_values()
+        text = str(text or "")
+        if "{=" in text:
+            try:
+                text = expr.expand_inline(text, vals)
+            except expr.ExprError as e:
+                raise ScriptFailed(f"In \"{model._short(text, 40)}\": {e}")
         return substitute(text, vals)
 
     def _scale_setup(self):
@@ -1100,7 +1111,14 @@ class Runner(Job):
                 self._highlight(tuple(step["region"]))
             return NEXT
         if a == "Set Variable":
-            self.values[step["var"]] = self.substitute(step.get("value"))
+            raw = str(step.get("value") or "")
+            if raw.lstrip().startswith("="):  # = {count} * 2: work it out
+                try:
+                    self.values[step["var"]] = expr.as_text(expr.evaluate(raw.lstrip()[1:], self._all_values()))
+                except expr.ExprError as e:
+                    raise ScriptFailed(f"Step {i + 1}: {e}")
+            else:
+                self.values[step["var"]] = self.substitute(raw)
             self.note(f"  {{{step['var']}}} = \"{model._short(self.values[step['var']], 60)}\"", detail=True)
             return NEXT
         if a == "Increment Variable":
