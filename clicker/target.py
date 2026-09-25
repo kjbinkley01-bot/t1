@@ -495,6 +495,30 @@ class WinBackend:
     def is_minimized(self, hwnd):
         return bool(self.user32.IsIconic(hwnd))
 
+    def focus(self, hwnd):
+        """Bring a window to the front (restoring it if minimized) and give it the keyboard."""
+        from . import inputs
+        u = self.user32
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, 9)  # SW_RESTORE
+        if u.GetForegroundWindow() != hwnd:
+            inputs.press_combo("alt", hold=0.0)  # lets SetForegroundWindow work from a background app
+            u.SetForegroundWindow(hwnd)
+
+    def move(self, hwnd, x, y, w=None, h=None):
+        """Move (and optionally resize) the whole window, in screen pixels."""
+        u = self.user32
+        if u.IsIconic(hwnd):
+            u.ShowWindow(hwnd, 9)
+        flags = 0x0004 | 0x0010  # SWP_NOZORDER | SWP_NOACTIVATE
+        if not w or not h:
+            flags |= 0x0001      # SWP_NOSIZE
+            w = h = 0
+        u.SetWindowPos(hwnd, None, int(x), int(y), int(w), int(h), flags)
+
+    def close(self, hwnd):
+        self.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE: the app may still ask to save
+
     def restore_behind(self, hwnd):
         """Un-minimize without taking focus, then send it behind other windows."""
         fg = self.user32.GetForegroundWindow()
@@ -732,6 +756,15 @@ def list_windows():
         return default_backend().list_windows()
     except RuntimeError:
         return []
+
+
+def find_window(title, process, backend=None):
+    """A window handle matching title (contains) and/or program, or None. Raises WindowNotFound off Windows."""
+    try:
+        b = backend or default_backend()
+    except RuntimeError as e:
+        raise WindowNotFound(str(e))
+    return b.find_window(str(title or ""), str(process or ""))
 
 
 def window_at(x, y):

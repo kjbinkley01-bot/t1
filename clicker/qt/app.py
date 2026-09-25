@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter,
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import alerts, model, storage, updates, vision
+from .. import alerts, clipboard, model, storage, updates, vision
 from . import scripthotkeys
 from ..core import CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
@@ -26,6 +26,31 @@ from .widgets import GlassButton, SegmentedTabs, apply_style
 TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"), ("triggers", "Screen Triggers"),
         ("import", "Import Script"), ("history", "History")]
 AUTOSAVE_MS = 60_000
+
+
+class QtClipboard:
+    """Clipboard access for script steps: done on the interface thread, which Qt requires."""
+
+    def __init__(self, win):
+        self.win = win
+
+    def _call(self, op, text=None):
+        if threading.current_thread() is threading.main_thread():
+            cb = QApplication.clipboard()
+            return cb.setText(text) if op == "set" else cb.text()
+        box, done = [], threading.Event()
+        self.win.post("app", "clip", (op, text, box, done))
+        if not done.wait(3.0):
+            raise RuntimeError("the window did not answer")
+        if box and isinstance(box[0], Exception):
+            raise box[0]
+        return box[0] if box else None
+
+    def get(self):
+        return self._call("get") or ""
+
+    def set(self, text):
+        self._call("set", text)
 
 
 class Surface(QWidget):
@@ -297,6 +322,7 @@ class GlassApp(QMainWindow):
         self.hotkeys = HotkeyManager(lambda kind, payload: self.post("hotkey", kind, payload),
                                      self.settings["hotkeys"], scripthotkeys.bindings(self.settings))
         self.script_hotkey_dialog = None
+        clipboard.set_backend(QtClipboard(self))
         self.tray = scripthotkeys.Tray(self)
         self._quitting = False
 
@@ -682,6 +708,17 @@ class GlassApp(QMainWindow):
                 self.stop_all()
             elif kind == "run_script":
                 self._run_script_from_trigger(payload)
+            elif kind == "clip":
+                op, text, box, done = payload
+                try:
+                    cb = QApplication.clipboard()
+                    if op == "set":
+                        cb.setText(text)
+                    else:
+                        box.append(cb.text())
+                except Exception as e:
+                    box.append(e)
+                done.set()
             return
         if kind == "notify":
             self.toast.show_msg("Clicker", str(payload))

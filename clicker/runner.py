@@ -4,10 +4,14 @@ import datetime
 import os
 import random
 import re
+import shlex
+import subprocess
+import sys
 import threading
 import time
+import webbrowser
 
-from . import history, inputs, model, runlog, storage, target, vision
+from . import clipboard, history, inputs, model, runlog, storage, target, vision
 
 
 PROGRESS_MIN_S = 0.15  # shorter pauses would only flicker a progress bar
@@ -189,6 +193,35 @@ def compare(left, op, right):
     raise ValueError(f"Unknown comparison '{op}'")
 
 
+def open_target(what, args=""):
+    """Open an app, file, folder or web address the way double-clicking it would."""
+    what = str(what or "").strip()
+    if not what:
+        raise ValueError("nothing to open")
+    if re.match(r"^[a-z][a-z0-9+.-]*://", what, re.I) or what.lower().startswith("www."):
+        webbrowser.open(what if "://" in what else "https://" + what)
+        return
+    if args:
+        subprocess.Popen([what] + shlex.split(args, posix=sys.platform != "win32"))
+    elif sys.platform == "win32":
+        os.startfile(what)  # noqa: S606 (the user's own script)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", what])
+    else:
+        subprocess.Popen(["xdg-open", what] if os.path.exists(what) else [what])
+
+
+def screenshot_path(raw):
+    """Where Save Screenshot writes: a folder (timestamped name), a file, or the default folder."""
+    stamp = datetime.datetime.now().strftime("shot_%Y%m%d-%H%M%S-%f")[:-3] + ".png"
+    raw = str(raw or "").strip()
+    if not raw:
+        return os.path.join(storage.data_dir(), "screenshots", stamp)
+    if os.path.isdir(raw) or raw.endswith(("/", "\\")):
+        return os.path.join(raw, stamp)
+    return raw if os.path.splitext(raw)[1] else raw + ".png"
+
+
 class _Frame:
     """Per step list state: labels, While pairs, loop counters, call stack."""
 
@@ -224,6 +257,7 @@ class Runner(Job):
                  log_dir=None, save_log=True, target_backend=None, path=None, history_path=None):
         super().__init__(emit)
         self.path = path
+        self.target_backend = target_backend  # also used by the window steps
         # run history goes next to the logs when a log folder is given (tests), else to the data folder
         self.history_path = history_path or (os.path.join(log_dir, "history.jsonl") if log_dir else None)
         self.fail_step = None
@@ -603,6 +637,96 @@ class Runner(Job):
             return ok
         return self._compare(step, i)
 
+    def _read_screen_text(self, step):
+        region = step.get("region")
+        if region:
+            self.last_region = region
+        text = vision.read_text(region, step.get("mode") or "text")
+        if step.get("var"):
+            self.values[step["var"]] = text
+        return text
+
+    def _text_step(self, step, i, fr, tag):
+        op = step.get("op") or "contains"
+        want = self.substitute(step.get("value") or "")
+        try:
+            if step["action"] == "If Text on Screen":
+                text = self._read_screen_text(step)
+                ok = compare(text, op, want)
+                self.log(f"{tag}: read \"{model._short(text, 40)}\", {'yes' if ok else 'no'}")
+                return self._goto(fr, step.get("goto") if ok else step.get("else_goto"), i)
+            timeout = float(step.get("timeout_s", 10))
+            if timeout >= PROGRESS_MIN_S:
+                self.flush_step()
+                self.announce(timeout, "wait")
+            end = time.monotonic() + timeout
+            text = ""
+            while True:
+                text = self._read_screen_text(step)
+                if compare(text, op, want):
+                    self.emit("progress", None)
+                    self.log(f"{tag}: read \"{model._short(text, 40)}\"")
+                    return ("next", None)
+                if time.monotonic() >= end:
+                    self.emit("progress", None)
+                    return ("fail", f"text was \"{model._short(text, 40)}\", not {op} \"{want}\" "
+                                    f"within {timeout:g} s")
+                self.sleep(0.25)
+        except vision.OcrUnavailable as e:
+            raise ScriptFailed(f"Step {i + 1}: {e}")
+        except ValueError as e:
+            raise ScriptFailed(f"Step {i + 1}: {e}")
+
+    def _find_win(self, title, process):
+        try:
+            return target.find_window(title, process, self.target_backend)
+        except target.WindowNotFound as e:
+            raise ScriptFailed(f"{e} (window steps work on Windows)")
+
+    def _wait_window(self, step, i, tag, title, process):
+        timeout = float(step.get("timeout_s", 10))
+        if timeout >= PROGRESS_MIN_S:
+            self.flush_step()
+            self.announce(timeout, "wait")
+        end = time.monotonic() + timeout
+        while True:
+            hwnd = self._find_win(title, process)
+            if hwnd:
+                self.emit("progress", None)
+                self.log(f"{tag}: {title or process} is open")
+                return ("next", None)
+            if time.monotonic() >= end:
+                self.emit("progress", None)
+                return ("fail", f"window '{title or process}' did not open within {timeout:g} s")
+            self.sleep(0.25)
+
+    def _window_step(self, step, i, fr, tag, dry):
+        a = step["action"]
+        title = self.substitute(step.get("title") or "")
+        process = self.substitute(step.get("process") or "")
+        if a == "Wait for Window":
+            return self._wait_window(step, i, tag, title, process)
+        hwnd = self._find_win(title, process)
+        if a == "If Window Open":
+            self.log(f"{tag}: {'open' if hwnd else 'not open'}")
+            return self._goto(fr, step.get("goto") if hwnd else step.get("else_goto"), i)
+        if not hwnd:
+            return ("fail", f"window '{title or process}' is not open")
+        if dry:
+            self.log(f"{tag} (dry run)")
+            return ("next", None)
+        b = self.target_backend or target.default_backend()
+        if a == "Focus Window":
+            b.focus(hwnd)
+            time.sleep(0.1)
+        elif a == "Move Window":
+            x, y, w, h = step["region"]
+            b.move(hwnd, x, y, w, h)
+        elif a == "Close Window":
+            b.close(hwnd)
+        self.log(tag)
+        return ("next", None)
+
     def _do(self, step, i, fr):
         a = step["action"]
         assets = fr.assets
@@ -784,6 +908,54 @@ class Runner(Job):
             ok, _ = self._wait(cond, timeout, 100, assets)
             if not ok:
                 return ("fail", f"screen kept changing for {timeout:g} s")
+            return ("next", None)
+
+        if a in ("Wait for Text", "If Text on Screen"):
+            return self._text_step(step, i, fr, tag)
+        if a in ("Wait for Window", "If Window Open", "Focus Window", "Move Window", "Close Window"):
+            return self._window_step(step, i, fr, tag, dry)
+        if a == "Open":
+            what = self.substitute(step.get("file"))
+            if dry:
+                self.log(f"{tag}: would open {what}")
+            else:
+                try:
+                    open_target(what, self.substitute(step.get("args") or ""))
+                except Exception as e:
+                    return ("fail", f"could not open {what}: {e}")
+                self.log(f"{tag}: opened {what}")
+            if step.get("title") and not dry:
+                return self._wait_window(step, i, tag, str(step.get("title")), "")
+            return ("next", None)
+        if a == "Set Clipboard":
+            text = self.substitute(step.get("value") or "")
+            if not dry:
+                try:
+                    clipboard.set(text)
+                except Exception as e:
+                    return ("fail", f"could not set the clipboard: {e}")
+            self.log(f"{tag}: \"{model._short(text, 40)}\"")
+            return ("next", None)
+        if a == "Copy Clipboard to Variable":
+            try:
+                text = clipboard.get()
+            except Exception as e:
+                return ("fail", f"could not read the clipboard: {e}")
+            self.values[step["var"]] = text
+            self.log(f"{tag}: {{{step['var']}}} = \"{model._short(text, 60)}\"")
+            return ("next", None)
+        if a == "Save Screenshot":
+            region = step.get("region")
+            try:
+                img, _o = vision.capture(region)
+                path = screenshot_path(self.substitute(step.get("file") or ""))
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(vision.encode_png(img))
+            except Exception as e:
+                return ("fail", f"could not save the screenshot: {e}")
+            self.values["last_screenshot"] = path
+            self.log(f"{tag}: saved {path}")
             return ("next", None)
 
         if a == "Read Text":

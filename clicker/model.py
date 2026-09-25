@@ -22,7 +22,9 @@ ACTION_GROUPS = [
         "Click Image", "Wait for Image", "Wait for Image to Vanish", "Wait for Pixel Color",
         "Wait for Screen to Settle", "If Image Found", "If Image Not Found", "If Pixel Color", "Count Image",
     ]),
-    ("Text", ["Read Text"]),
+    ("Text", ["Read Text", "Wait for Text", "If Text on Screen"]),
+    ("Windows", ["Wait for Window", "If Window Open", "Focus Window", "Move Window", "Close Window"]),
+    ("Apps and clipboard", ["Open", "Set Clipboard", "Copy Clipboard to Variable", "Save Screenshot"]),
     ("Variables", ["Set Variable", "Increment Variable", "If Variable"]),
     ("Loops", [
         "While Image Found", "While Image Not Found", "While Pixel Color", "While Variable",
@@ -73,7 +75,8 @@ IMAGE_ACTIONS = {"Click Image", "Wait for Image", "Wait for Image to Vanish",
                  "If Image Found", "If Image Not Found", "While Image Found", "While Image Not Found", "Count Image"}
 IMAGE_MODES = ["any of them", "all of them"]
 WHILE_ACTIONS = {"While Image Found", "While Image Not Found", "While Pixel Color", "While Variable"}
-SCREEN_ACTIONS = set(dict(ACTION_GROUPS)["Screen"]) | {"Read Text", "While Image Found",
+TEXT_OPS = ["contains", "not contains", "=", "!=", "<", "<=", ">", ">="]
+SCREEN_ACTIONS = set(dict(ACTION_GROUPS)["Screen"]) | {"Read Text", "Wait for Text", "If Text on Screen", "While Image Found",
                                                       "While Image Not Found", "While Pixel Color"}
 COMPARE_OPS = ["=", "!=", "<", "<=", ">", ">=", "contains", "not contains"]
 TARGET_KEYS = ("goto", "else_goto")
@@ -94,6 +97,10 @@ _PIXEL = [("color", "Color", 9, "color"), ("tolerance", "Tolerance", 5, "int")]
 _COMPARE = [("var", "Variable", 14, "var"), ("op", "Is", 10, "choice:" + ",".join(COMPARE_OPS)),
             ("value", "Value", 14, "text")]
 _MAX = [("max_loops", "Max loops", 6, "int")]
+_TEXT = [("region", "Region", 16, "region"), ("mode", "Read as", 8, "choice:text,number"),
+         ("op", "Is", 10, "choice:" + ",".join(TEXT_OPS)), ("value", "Value", 16, "text"),
+         ("var", "Save text to", 12, "var_opt")]
+_WIN = [("title", "Title contains", 22, "text"), ("process", "Program", 14, "text")]
 
 # action: list of (key, label, width, kind)
 FIELD_SPECS = {
@@ -132,6 +139,18 @@ FIELD_SPECS = {
     "While Image Not Found": _IMG + _MAX,
     "While Pixel Color": _PIXEL + _MAX,
     "While Variable": _COMPARE + _MAX,
+    "Wait for Text": _TEXT + _TIMEOUT,
+    "If Text on Screen": _TEXT + _BRANCH,
+    "Wait for Window": _WIN + _TIMEOUT,
+    "If Window Open": _WIN + _BRANCH,
+    "Focus Window": _WIN,
+    "Move Window": _WIN + [("region", "Put it at", 18, "region")],
+    "Close Window": _WIN,
+    "Open": [("file", "App, file or URL", 30, "text"), ("args", "Arguments", 14, "text"),
+             ("title", "Wait for window", 16, "text")] + _TIMEOUT,
+    "Set Clipboard": [("value", "Text", 40, "text")],
+    "Copy Clipboard to Variable": [("var", "Save to", 14, "var")],
+    "Save Screenshot": [("region", "Region", 16, "region"), ("file", "Save to", 40, "text")],
     "Run Script File": [("file", "File", 40, "file")],
     "Show Notification": [("message", "Message", 44, "text")],
 }
@@ -142,7 +161,11 @@ DEFAULTS = {
     "button": "left", "goto": "", "else_goto": "", "region": "", "image": "",
     "text": "", "keys": "", "file": "", "message": "", "color": "",
     "var": "", "value": "", "op": "=", "mode": "text", "max_loops": "0",
+    "title": "", "process": "", "args": "",
 }
+
+# per action defaults that differ from DEFAULTS
+ACTION_DEFAULTS = {"Wait for Text": {"op": "contains"}, "If Text on Screen": {"op": "contains"}}
 
 ACTION_HINTS = {
     "Click Image": "X and Y are an optional offset from the center of the match. Add more images under "
@@ -156,6 +179,21 @@ ACTION_HINTS = {
     "If Image Found": "Step numbers left blank mean continue to the next step.",
     "If Image Not Found": "Step numbers left blank mean continue to the next step.",
     "Hot Key": "Examples: ctrl+s, alt+tab, ctrl+shift+esc, win+d",
+    "Wait for Text": "Reads the region (blank = whole screen) until its text matches, e.g. contains Complete, "
+                     "or read as number < 30. Save text to keeps what it read in a variable.",
+    "If Text on Screen": "Reads the region once. Step numbers left blank mean continue.",
+    "Wait for Window": "Waits until a window whose title contains the text (and/or of that program, "
+                       "e.g. notepad.exe) is open. Windows only.",
+    "If Window Open": "Step numbers left blank mean continue. Windows only.",
+    "Focus Window": "Brings the window to the front (restoring it if minimized). Windows only.",
+    "Move Window": "Draw where the window should go (x, y, width, height). Windows only.",
+    "Close Window": "Asks the window to close, like clicking its X (it may ask to save). Windows only.",
+    "Open": "An app (C:\\...\\app.exe or notepad), a file, a folder or a web address. Give a window title "
+            "to wait until it's ready.",
+    "Set Clipboard": "Puts the text on the clipboard; {variables} work.",
+    "Copy Clipboard to Variable": "Saves the clipboard text in a variable, e.g. after Hot Key ctrl+c.",
+    "Save Screenshot": "Saves a PNG. Save to can be a folder or a file name, with {variables}; blank saves to "
+                       "the screenshots folder. The path goes in {last_screenshot}.",
     "Send Keystroke": "Examples: enter, tab, esc, f5, down, a",
     "Type Text": "Use {name} for script inputs, or {today}, {yesterday}, {tomorrow}, {time}.",
     "Loop Back": "Jumps back to the step the given number of times, then continues.",
@@ -444,6 +482,8 @@ def parse_field(kind, raw, label):
         return parse_int(raw, label, 50, 100) / 100.0
     if kind == "var":
         return parse_var(raw, label)
+    if kind == "var_opt":
+        return parse_var(raw, label) if raw.strip() else ""
     if kind == "sint":
         return parse_int(raw, label)
     if kind == "int":
@@ -600,7 +640,17 @@ def check_step(step, steps=None, labels=None):
         return "Choose the script file to run."
     if a == "Random Delay" and (step.get("min_ms") or 0) > (step.get("max_ms") or 0):
         return "Min ms must not be more than Max ms."
-    if a in ("Set Variable", "Increment Variable", "If Variable", "While Variable", "Read Text", "Count Image"):
+    if a in ("Wait for Text", "If Text on Screen") and not str(step.get("value") or "").strip():
+        return "Enter the text or number to look for."
+    if a in ("Wait for Window", "If Window Open", "Focus Window", "Move Window", "Close Window") \
+            and not (str(step.get("title") or "").strip() or str(step.get("process") or "").strip()):
+        return "Enter part of the window title, or the program name."
+    if a == "Move Window" and not step.get("region"):
+        return "Draw where the window should go."
+    if a == "Open" and not str(step.get("file") or "").strip():
+        return "Enter the app, file or web address to open."
+    if a in ("Set Variable", "Increment Variable", "If Variable", "While Variable", "Read Text", "Count Image",
+             "Copy Clipboard to Variable"):
         if not NAME_RE.match(str(step.get("var") or "")):
             return "Enter a variable name (letters, digits and _)."
     if a in ("If Variable", "While Variable") and step.get("op", "=") not in COMPARE_OPS:
@@ -716,6 +766,30 @@ def describe_action(step):
         return f"While {cond}" + (f", max {cap} loops" if cap else "")
     if a == "Loop Back":
         return f"Back to {_tgt(step.get('goto'))}, {step.get('times', 1)} times"
+    if a in ("Wait for Text", "If Text on Screen"):
+        where = format_region(step.get("region")) or "screen"
+        cond = f"{step.get('mode') or 'text'} {step.get('op', 'contains')} \"{_short(step.get('value'), 16)}\""
+        if a == "Wait for Text":
+            return f"Until {where} {cond}, max {step.get('timeout_s', 10)} s"
+        return f"{cond} then {_tgt(step.get('goto'), 'next')}, else {_tgt(step.get('else_goto'), 'next')}"
+    if a in ("Wait for Window", "If Window Open", "Focus Window", "Move Window", "Close Window"):
+        who = " · ".join(v for v in (str(step.get("title") or ""), str(step.get("process") or "")) if v)
+        if a == "Wait for Window":
+            return f"{who}, max {step.get('timeout_s', 10)} s"
+        if a == "If Window Open":
+            return f"{who} then {_tgt(step.get('goto'), 'next')}, else {_tgt(step.get('else_goto'), 'next')}"
+        if a == "Move Window":
+            return f"{who} to {format_region(step.get('region'))}"
+        return who
+    if a == "Open":
+        what = _short(str(step.get("file", "")), 40)
+        return what + (f", wait for {step.get('title')}" if step.get("title") else "")
+    if a == "Set Clipboard":
+        return f"\"{_short(step.get('value'), 30)}\""
+    if a == "Copy Clipboard to Variable":
+        return f"into {{{step.get('var')}}}"
+    if a == "Save Screenshot":
+        return (format_region(step.get("region")) or "whole screen") + (f" to {step.get('file')}" if step.get("file") else "")
     if a == "Run Script File":
         return _short(str(step.get("file", "")).replace("\\", "/").split("/")[-1])
     if a == "Show Notification":

@@ -526,7 +526,8 @@ class ActionTab(QWidget):
                 row, col = row + 1, 0
             lab = QLabel(text)
             self.details.addWidget(lab, row, col * 3)
-            val = self.detail_values.get(key, model.DEFAULTS.get(key, ""))
+            val = self.detail_values.get(key, model.ACTION_DEFAULTS.get(action, {}).get(key,
+                                                                               model.DEFAULTS.get(key, "")))
             box = QHBoxLayout()
             box.setSpacing(6)
             if kind.startswith("choice:"):
