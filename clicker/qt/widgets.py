@@ -396,12 +396,14 @@ def stylesheet(m):
     popup = "rgba(28,30,44,245)" if m.dark else "rgba(250,250,253,248)"
     hover_row = "rgba(255,255,255,18)" if m.dark else "rgba(0,0,0,12)"
     alt = "rgba(255,255,255,7)" if m.dark else "rgba(255,255,255,70)"
+    warn = "#ffd166" if m.dark else "#8a5a00"
     return f"""
     * {{ color: {text}; }}
     QLabel {{ background: transparent; }}
     QLabel[role="caption"] {{ color: {detail}; }}
     QLabel[role="detail"] {{ color: {detail}; }}
     QLabel[role="error"] {{ color: #ff6b6b; }}
+    QLabel[role="warn"] {{ color: {warn}; }}
     QToolTip {{ background: {popup}; color: {text}; border: 1px solid {line}; border-radius: 8px; padding: 6px 8px; }}
     QLineEdit, QComboBox, QSpinBox {{
         background: {field}; border: 1px solid {line}; border-radius: 10px; padding: 5px 10px;

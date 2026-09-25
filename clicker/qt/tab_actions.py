@@ -11,10 +11,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QStyledItemDelegate, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from .. import editing, formlogic, inputs, model, runlog, storage, target, vision
+from .. import editing, flow, formlogic, inputs, model, runlog, storage, target, vision
 from ..runner import Runner
 from ..storage import AssetStore
 from . import dialogs
+from .flowview import FlowPanel, FlowRail
 from .glass import GlassPanel, font
 from .thumbs import ImageStrip, step_icon
 from .widgets import Caption, GlassButton, GlassSwitch, clear_layout
@@ -174,6 +175,9 @@ class ActionTab(QWidget):
         self.detail_edits = {}
         self.detail_values = {}
         self._build()
+        self.btn_flow.set_kind("on" if self.flow_on else "glass")
+        self.rail.setVisible(self.flow_on)
+        self.flow_panel.setVisible(self.flow_on)
         self._shortcuts()
         self._on_action_change()
         self._on_wait_mode()
@@ -419,6 +423,9 @@ class ActionTab(QWidget):
         h.addStretch(1)
         self.lbl_count = detail_label("")
         h.addWidget(self.lbl_count)
+        self.btn_flow = GlassButton("Flow", icon="repeat", small=True, tip="Show where loops and jumps lead")
+        self.btn_flow.clicked.connect(lambda: self.set_flow_visible(not self.flow_on))
+        h.addWidget(self.btn_flow)
         logs = GlassButton("Run Logs", icon="notebook", small=True)
         logs.clicked.connect(self.open_logs)
         h.addWidget(logs)
@@ -445,7 +452,22 @@ class ActionTab(QWidget):
         self.tree.itemSelectionChanged.connect(self._on_select)
         self._drag = _DragFilter(self)
         self.tree.viewport().installEventFilter(self._drag)
-        sl.addWidget(self.tree, 1)
+        self._dead = set()
+        self.rail = FlowRail(self)
+        self.flow_panel = FlowPanel(self)
+        self.flow_panel.go.connect(self.select_step)
+        self.flow_panel.hide_me.connect(lambda: self.set_flow_visible(False))
+        self.tree.verticalScrollBar().valueChanged.connect(lambda _v: self.rail.update())
+        self.tree.itemSelectionChanged.connect(self.rail.update)
+        self.tree.itemExpanded.connect(lambda _i: self.rail.update())
+        body = QHBoxLayout()
+        body.setSpacing(0)
+        body.addWidget(self.rail)
+        body.addWidget(self.tree, 1)
+        body.addSpacing(8)
+        body.addWidget(self.flow_panel)
+        sl.addLayout(body, 1)
+        self.flow_on = bool(self.main.settings.get("show_flow", True))
         mid.addWidget(sp, 1)
 
         side = QVBoxLayout()
@@ -830,14 +852,15 @@ class ActionTab(QWidget):
         texts = (str(i + 1), s.get("label", ""), s["action"], xt, yt, back, str(s.get("delay_ms", 0)),
                  str(s.get("repeat", 1)), cond, s.get("comment", ""))
         flag = "error" if model.check_step(s, self.script["steps"], labels) else (
-            "screen" if model.is_screen_step(s) else "")
+            "dead" if i in self._dead else ("screen" if model.is_screen_step(s) else ""))
         return texts, flag
 
     def _paint_row(self, item, texts, flag, running):
         for c, t in enumerate(texts):
             item.setText(c, t)
         dark = self.main.mode.dark
-        fg = error_fg(dark) if flag == "error" else (screen_fg(dark) if flag == "screen" else None)
+        fg = error_fg(dark) if flag == "error" else (screen_fg(dark) if flag == "screen" else (
+            self.main.mode.faint if flag == "dead" else None))
         bg = QBrush(QColor(0, 136, 255, 70)) if running else QBrush()
         for c in range(len(texts)):
             item.setForeground(c, QBrush(fg) if fg else QBrush())
@@ -846,8 +869,27 @@ class ActionTab(QWidget):
         f.setWeight(QFont.Weight.DemiBold if running else QFont.Weight.Normal)
         item.setFont(2, f)
 
+    def set_flow_visible(self, on):
+        self.flow_on = bool(on)
+        self.main.settings["show_flow"] = self.flow_on
+        self.main.save_settings()
+        self.btn_flow.set_kind("on" if self.flow_on else "glass")
+        self.rail.setVisible(self.flow_on)
+        self.flow_panel.setVisible(self.flow_on)
+        if hasattr(self.main, "update_min_width"):
+            self.main.update_min_width()
+
+    def _refresh_flow(self):
+        steps = self.script["steps"]
+        edges = flow.edges(steps)
+        dead = flow.unreachable(self.script)
+        self._dead = set(dead)
+        self.rail.set_edges(edges)
+        self.flow_panel.set_flow(steps, edges, dead)
+
     def refresh_list(self, select=None):
         steps = self.script["steps"]
+        self._refresh_flow()
         labels = model.label_map(steps)
         rows = [self._row(i, s, labels) for i, s in enumerate(steps)]
         tree = self.tree
