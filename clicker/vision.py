@@ -284,40 +284,51 @@ class OcrUnavailable(RuntimeError):
     pass
 
 
-def _tesseract():
-    try:
-        import pytesseract
-    except ImportError:
-        raise OcrUnavailable("Reading text needs the pytesseract package (pip install pytesseract).")
-    if sys.platform == "win32" and not getattr(_tesseract, "_located", False):
-        import os
+NO_TESSERACT = ("Tesseract OCR is not installed. Install it from "
+                "https://github.com/UB-Mannheim/tesseract/wiki (Windows) or your package manager.")
+
+
+def _tesseract_exe():
+    """Path to the tesseract program (it is not on PATH after a default Windows install)."""
+    import os
+    import shutil
+    exe = shutil.which("tesseract")
+    if exe is None and sys.platform == "win32":
         for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
                      os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
                      os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
-            exe = os.path.join(base, "Tesseract-OCR", "tesseract.exe")
-            if os.path.isfile(exe):
-                pytesseract.pytesseract.tesseract_cmd = exe
-                break
-        _tesseract._located = True
-    return pytesseract
+            cand = os.path.join(base, "Tesseract-OCR", "tesseract.exe")
+            if os.path.isfile(cand):
+                return cand
+    return exe
+
+
+def _tesseract(args, data=None):
+    import subprocess
+    exe = _tesseract_exe()
+    if exe is None:
+        raise OcrUnavailable(NO_TESSERACT)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flash on Windows
+    try:
+        r = subprocess.run([exe, *args], input=data, capture_output=True, timeout=30, creationflags=flags)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise OcrUnavailable(f"Tesseract OCR could not run: {e}")
+    if r.returncode != 0:
+        raise OcrUnavailable("Tesseract OCR failed: " + r.stderr.decode("utf-8", "replace").strip()[-200:])
+    return r.stdout.decode("utf-8", "replace")
 
 
 def ocr_problem():
     """None when text reading works, else a message saying what is missing."""
     try:
-        pt = _tesseract()
-        pt.get_tesseract_version()
+        _tesseract(["--version"])
         return None
     except OcrUnavailable as e:
         return str(e)
-    except Exception:
-        return ("Tesseract OCR is not installed. Install it from "
-                "https://github.com/UB-Mannheim/tesseract/wiki (Windows) or your package manager.")
 
 
 def ocr_image(img, mode="text"):
     """Read text from a BGR image. mode 'number' keeps digits, sign and decimal point."""
-    pt = _tesseract()
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     h = gray.shape[0]
     if h < 40:  # small UI text reads far better enlarged
@@ -325,15 +336,10 @@ def ocr_image(img, mode="text"):
         gray = cv2.resize(gray, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
     if float(gray.mean()) < 110:  # light text on dark background
         gray = 255 - gray
-    config = "--psm 7" if gray.shape[0] < 120 else "--psm 6"
+    args = ["stdin", "stdout", "--psm", "7" if gray.shape[0] < 120 else "6"]
     if mode == "number":
-        config += " -c tessedit_char_whitelist=0123456789.,-"
-    try:
-        text = pt.image_to_string(gray, config=config)
-    except pt.TesseractNotFoundError:
-        raise OcrUnavailable("Tesseract OCR is not installed. Install it from "
-                             "https://github.com/UB-Mannheim/tesseract/wiki (Windows) or your package manager.")
-    text = " ".join(text.split())
+        args += ["-c", "tessedit_char_whitelist=0123456789.,-"]
+    text = " ".join(_tesseract(args, cv2.imencode(".png", gray)[1].tobytes()).split())
     if mode == "number":
         import re
         m = re.search(r"-?\d[\d,]*(?:\.\d+)?", text)

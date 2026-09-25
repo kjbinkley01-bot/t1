@@ -3,6 +3,7 @@ __pycache__/
 build/
 dist/
 *.spec
+!Clicker.spec
 .venv/
 venv/
 .DS_Store

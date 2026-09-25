@@ -12,11 +12,7 @@ python -m pytest -q
 if errorlevel 1 goto testfail
 echo.
 echo Building Clicker.exe ...
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name Clicker ^
-  --icon assets\clicker.ico --add-data "assets;assets" ^
-  --hidden-import pynput.keyboard._win32 --hidden-import pynput.mouse._win32 ^
-  --collect-submodules clicker ^
-  clicker_app.py
+python -m PyInstaller --noconfirm --clean Clicker.spec
 if errorlevel 1 goto fail
 echo.
 echo Done. Your app is at: %~dp0dist\Clicker.exe
