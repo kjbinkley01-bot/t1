@@ -1,6 +1,7 @@
 """Background jobs: the action script runner and the shared pause/stop plumbing."""
 
 import datetime
+import operator
 import os
 import random
 import re
@@ -15,6 +16,7 @@ from . import clipboard, datafile, history, inputs, model, runlog, storage, targ
 
 
 PROGRESS_MIN_S = 0.15  # shorter pauses would only flicker a progress bar
+NEXT = ("next", None)  # a step's result: go on to the following step
 
 
 class JobStopped(Exception):
@@ -168,29 +170,20 @@ def fmt_number(f):
     return str(int(f)) if float(f).is_integer() else f"{f:g}"
 
 
+_OPS = {"=": operator.eq, "==": operator.eq, "!=": operator.ne, "<": operator.lt, "<=": operator.le,
+        ">": operator.gt, ">=": operator.ge}
+
+
 def compare(left, op, right):
     """Compare two values: numerically when both are numbers, else as text."""
-    ln, rn = to_number(left), to_number(right)
     if op in ("contains", "not contains"):
-        found = str(right).lower() in str(left).lower()
-        return found if op == "contains" else not found
-    if ln is not None and rn is not None:
-        a, b = ln, rn
-    else:
-        a, b = str(left).strip().lower(), str(right).strip().lower()
-    if op in ("=", "=="):
-        return a == b
-    if op == "!=":
-        return a != b
-    if op == "<":
-        return a < b
-    if op == "<=":
-        return a <= b
-    if op == ">":
-        return a > b
-    if op == ">=":
-        return a >= b
-    raise ValueError(f"Unknown comparison '{op}'")
+        return (str(right).lower() in str(left).lower()) == (op == "contains")
+    if op not in _OPS:
+        raise ValueError(f"Unknown comparison '{op}'")
+    ln, rn = to_number(left), to_number(right)
+    if ln is None or rn is None:
+        ln, rn = str(left).strip().lower(), str(right).strip().lower()
+    return _OPS[op](ln, rn)
 
 
 STRUCTURE_ONLY = {"Else", "End If", "Try", "On Error", "End Try"}  # these never wait before running
@@ -561,26 +554,45 @@ class Runner(Job):
             fr.try_stack.pop()  # a jump left that Try: it no longer applies
         raise ScriptFailed(message)
 
+    def _see_image(self, step, i, fr):
+        """Is the step's image on screen right now? (highlights where)"""
+        ok, m = self._wait(self._image_cond(step, i, fr.assets), 0, 100, fr.assets)
+        if m:
+            self._highlight(m.rect)
+        return ok
+
+    @staticmethod
+    def _pixel_cond(step):
+        return {"kind": "pixel_is", "x": step.get("x"), "y": step.get("y"), "color": step.get("color"),
+                "tolerance": step.get("tolerance", 12)}
+
+    def _see_pixel(self, step, fr):
+        return self._wait(self._pixel_cond(step), 0, 100, fr.assets)[0]
+
+    def _poll(self, timeout, probe):
+        """Call probe() every 0.25 s until it is true or timeout seconds pass; returns its last answer."""
+        if timeout >= PROGRESS_MIN_S:
+            self.flush_step()
+            self.announce(timeout, "wait")
+        end = time.monotonic() + timeout
+        while True:
+            ok = probe()
+            if ok or time.monotonic() >= end:
+                self.emit("progress", None)
+                return ok
+            self.sleep(0.25)
+
     def _check(self, step, i, fr):
         """Evaluate an If / Else If check."""
         c = step.get("check") or "variable"
         if c.startswith("image"):
-            ok, m = self._wait(self._image_cond(step, i, fr.assets), 0, 100, fr.assets)
-            if m:
-                self._highlight(m.rect)
-            return ok if c == "image found" else not ok
+            return self._see_image(step, i, fr) == (c == "image found")
         if c == "pixel color":
-            cond = {"kind": "pixel_is", "x": step.get("x"), "y": step.get("y"), "color": step.get("color"),
-                    "tolerance": step.get("tolerance", 12)}
-            ok, _ = self._wait(cond, 0, 100, fr.assets)
-            return ok
+            return self._see_pixel(step, fr)
         if c == "variable":
             return self._compare(step, i)
         if c == "text on screen":
-            try:
-                text = self._read_screen_text(dict(step, var=""))
-            except vision.OcrUnavailable as e:
-                raise ScriptFailed(f"Step {i + 1}: {e}")
+            text = self._read_screen_text(dict(step, var=""), i)
             return compare(text, step.get("op") or "contains", self.substitute(step.get("value") or ""))
         if c in ("window open", "window not open"):
             hwnd = self._find_win(self.substitute(step.get("title") or ""), self.substitute(step.get("process") or ""))
@@ -606,10 +618,10 @@ class Runner(Job):
         if a in ("Else If", "Else"):  # the branch above finished: skip the rest of the block
             return ("jump", fr.ifs[i]["end"] + 1)
         if a == "End If":
-            return ("next", None)
+            return NEXT
         if a == "Try":
             fr.try_stack.append(i)
-            return ("next", None)
+            return NEXT
         if a == "On Error":  # the Try part finished without failing
             if fr.try_stack and fr.tries.get(fr.try_stack[-1], {}).get("catch") == i:
                 fr.try_stack.pop()
@@ -618,7 +630,7 @@ class Runner(Job):
             for t in list(fr.try_stack)[::-1]:
                 if fr.tries.get(t, {}).get("end") == i:
                     fr.try_stack.remove(t)
-            return ("next", None)
+            return NEXT
         raise ScriptFailed(f"Step {i + 1}: unknown block step '{a}'")
 
     def _debug_pause(self, i):
@@ -661,7 +673,7 @@ class Runner(Job):
             return ("retry", None)
         if mode == "skip":
             self.log(msg + ", skipped")
-            return ("next", None)
+            return NEXT
         if mode == "goto":
             target = fr.target(w.get("goto"), i)
             if target is not None:
@@ -700,7 +712,7 @@ class Runner(Job):
         back = None
         if step.get("cursor_back") and step["action"] in model.MOUSE_ACTIONS and not self.dry_run:
             back = self.io.position()
-        res = ("next", None)
+        res = NEXT
         try:
             reps = max(1, int(step.get("repeat") or 1))
             for r in range(reps):
@@ -716,7 +728,7 @@ class Runner(Job):
 
     def _goto(self, fr, value, i):
         t = fr.target(value, i)
-        return ("next", None) if t is None else ("jump", t)
+        return NEXT if t is None else ("jump", t)
 
     def _image_cond(self, step, i, assets, kind="image_appears"):
         names = model.step_images(step)
@@ -742,15 +754,9 @@ class Runner(Job):
     def _while_true(self, step, i, fr):
         a = step["action"]
         if a in ("While Image Found", "While Image Not Found"):
-            ok, m = self._wait(self._image_cond(step, i, fr.assets), 0, 100, fr.assets)
-            if m:
-                self._highlight(m.rect)
-            return ok if a == "While Image Found" else not ok
+            return self._see_image(step, i, fr) == (a == "While Image Found")
         if a == "While Pixel Color":
-            cond = {"kind": "pixel_is", "x": step.get("x"), "y": step.get("y"),
-                    "color": step.get("color"), "tolerance": step.get("tolerance", 12)}
-            ok, _ = self._wait(cond, 0, 100, fr.assets)
-            return ok
+            return self._see_pixel(step, fr)
         return self._compare(step, i)
 
     def _for_each(self, step, i, fr, tag):
@@ -781,13 +787,16 @@ class Runner(Job):
         self.values["row_count"] = str(state["start"] + len(state["rows"]))
         self.note(f"  row {self.values['row']}: " + ", ".join(
             f"{n}={model._short(v, 20)}" for n, v in list(zip(state["names"], state["rows"][k]))[:6]), detail=True)
-        return ("next", None)
+        return NEXT
 
-    def _read_screen_text(self, step):
+    def _read_screen_text(self, step, i):
         region = step.get("region")
         if region:
             self.last_region = region
-        text = vision.read_text(region, step.get("mode") or "text")
+        try:
+            text = vision.read_text(region, step.get("mode") or "text")
+        except vision.OcrUnavailable as e:
+            raise ScriptFailed(f"Step {i + 1}: {e}")
         if step.get("var"):
             self.values[step["var"]] = text
         return text
@@ -795,33 +804,24 @@ class Runner(Job):
     def _text_step(self, step, i, fr, tag):
         op = step.get("op") or "contains"
         want = self.substitute(step.get("value") or "")
+        read = []
+
+        def matches():
+            read.append(self._read_screen_text(step, i))
+            return compare(read[-1], op, want)
         try:
             if step["action"] == "If Text on Screen":
-                text = self._read_screen_text(step)
-                ok = compare(text, op, want)
-                self.log(f"{tag}: read \"{model._short(text, 40)}\", {'yes' if ok else 'no'}")
+                ok = matches()
+                self.log(f"{tag}: read \"{model._short(read[-1], 40)}\", {'yes' if ok else 'no'}")
                 return self._goto(fr, step.get("goto") if ok else step.get("else_goto"), i)
             timeout = float(step.get("timeout_s", 10))
-            if timeout >= PROGRESS_MIN_S:
-                self.flush_step()
-                self.announce(timeout, "wait")
-            end = time.monotonic() + timeout
-            text = ""
-            while True:
-                text = self._read_screen_text(step)
-                if compare(text, op, want):
-                    self.emit("progress", None)
-                    self.log(f"{tag}: read \"{model._short(text, 40)}\"")
-                    return ("next", None)
-                if time.monotonic() >= end:
-                    self.emit("progress", None)
-                    return ("fail", f"text was \"{model._short(text, 40)}\", not {op} \"{want}\" "
-                                    f"within {timeout:g} s")
-                self.sleep(0.25)
-        except vision.OcrUnavailable as e:
-            raise ScriptFailed(f"Step {i + 1}: {e}")
+            ok = self._poll(timeout, matches)
         except ValueError as e:
             raise ScriptFailed(f"Step {i + 1}: {e}")
+        if not ok:
+            return ("fail", f"text was \"{model._short(read[-1], 40)}\", not {op} \"{want}\" within {timeout:g} s")
+        self.log(f"{tag}: read \"{model._short(read[-1], 40)}\"")
+        return NEXT
 
     def _find_win(self, title, process):
         try:
@@ -829,29 +829,19 @@ class Runner(Job):
         except target.WindowNotFound as e:
             raise ScriptFailed(f"{e} (window steps work on Windows)")
 
-    def _wait_window(self, step, i, tag, title, process):
+    def _wait_window(self, step, tag, title, process):
         timeout = float(step.get("timeout_s", 10))
-        if timeout >= PROGRESS_MIN_S:
-            self.flush_step()
-            self.announce(timeout, "wait")
-        end = time.monotonic() + timeout
-        while True:
-            hwnd = self._find_win(title, process)
-            if hwnd:
-                self.emit("progress", None)
-                self.log(f"{tag}: {title or process} is open")
-                return ("next", None)
-            if time.monotonic() >= end:
-                self.emit("progress", None)
-                return ("fail", f"window '{title or process}' did not open within {timeout:g} s")
-            self.sleep(0.25)
+        if not self._poll(timeout, lambda: self._find_win(title, process)):
+            return ("fail", f"window '{title or process}' did not open within {timeout:g} s")
+        self.log(f"{tag}: {title or process} is open")
+        return NEXT
 
     def _window_step(self, step, i, fr, tag, dry):
         a = step["action"]
         title = self.substitute(step.get("title") or "")
         process = self.substitute(step.get("process") or "")
         if a == "Wait for Window":
-            return self._wait_window(step, i, tag, title, process)
+            return self._wait_window(step, tag, title, process)
         hwnd = self._find_win(title, process)
         if a == "If Window Open":
             self.log(f"{tag}: {'open' if hwnd else 'not open'}")
@@ -860,7 +850,7 @@ class Runner(Job):
             return ("fail", f"window '{title or process}' is not open")
         if dry:
             self.log(f"{tag} (dry run)")
-            return ("next", None)
+            return NEXT
         b = self.target_backend or target.default_backend()
         if a == "Focus Window":
             b.focus(hwnd)
@@ -871,7 +861,7 @@ class Runner(Job):
         elif a == "Close Window":
             b.close(hwnd)
         self.log(tag)
-        return ("next", None)
+        return NEXT
 
     def _do(self, step, i, fr):
         a = step["action"]
@@ -887,17 +877,17 @@ class Runner(Job):
                 self.log(f"{tag} (dry run, not clicked)")
                 if has_xy:
                     self._highlight((x - 8, y - 8, 17, 17))
-                return ("next", None)
+                return NEXT
             if has_xy:
                 self.io.move_to(x, y)
                 time.sleep(0.01)
             self.io.click(button, count, mods)
-            return ("next", None)
+            return NEXT
 
         if a in model.DRAG_MAP:
             button, begin = model.DRAG_MAP[a]
             if dry:
-                return ("next", None)
+                return NEXT
             if begin:
                 self.io.move_to(x, y)
                 time.sleep(0.02)
@@ -909,7 +899,7 @@ class Runner(Job):
                 self.io.release_button(b)
                 if b in self.held_buttons:
                     self.held_buttons.remove(b)
-            return ("next", None)
+            return NEXT
 
         if a in model.SCROLL_MAP:
             dx, dy = model.SCROLL_MAP[a]
@@ -919,27 +909,27 @@ class Runner(Job):
                     self.io.move_to(x, y)
                     time.sleep(0.01)
                 self.io.scroll(dx * amount, dy * amount)
-            return ("next", None)
+            return NEXT
 
         if a == "Move Mouse":
             if not dry:
                 self.io.move_to(x, y)
-            return ("next", None)
+            return NEXT
         if a == "Move Mouse by Offset":
             if not dry:
                 self.io.move_by(x or 0, y or 0)
-            return ("next", None)
+            return NEXT
         if a == "Move Mouse by Angle":
             if not dry:
                 self.io.move_by_angle(x or 0, y or 0)
-            return ("next", None)
+            return NEXT
         if a == "Save Cursor Location":
             self.saved_pos = self.io.position()
-            return ("next", None)
+            return NEXT
         if a == "Restore Cursor Location":
             if self.saved_pos and not dry:
                 self.io.move_to(*self.saved_pos)
-            return ("next", None)
+            return NEXT
 
         if a == "Type Text":
             text = self.substitute(step.get("text"))
@@ -947,21 +937,21 @@ class Runner(Job):
                 self.log(f"{tag}: would type {len(text)} characters")
             else:
                 self.io.type_text(text)
-            return ("next", None)
+            return NEXT
         if a in ("Send Keystroke", "Hot Key"):
             if not dry:
                 self.io.press_combo(step.get("keys"))
-            return ("next", None)
+            return NEXT
         if a == "Key Down":
             if not dry:
                 self.held_keys.extend(self.io.key_down(step.get("keys")))
-            return ("next", None)
+            return NEXT
         if a == "Key Up":
             if not dry:
                 for k in self.io.key_up(step.get("keys")):
                     if k in self.held_keys:
                         self.held_keys.remove(k)
-            return ("next", None)
+            return NEXT
 
         if a in model.WHILE_ACTIONS:
             end = fr.pairs[i]
@@ -969,7 +959,7 @@ class Runner(Job):
             count = fr.whiles.get(i, 0)
             if self._while_true(step, i, fr) and not (cap and count >= cap):
                 fr.whiles[i] = count + 1
-                return ("next", None)
+                return NEXT
             if cap and count >= cap:
                 self.log(f"{tag}: stopped looping after {cap} loops")
             fr.whiles[i] = 0
@@ -998,19 +988,16 @@ class Runner(Job):
                 y1 = max(m.y + m.h for m in hits)
                 self._highlight((x0, y0, x1 - x0, y1 - y0))
             self.log(f"{tag}: found {len(hits)}, {{{step.get('var')}}} = {len(hits)}")
-            return ("next", None)
+            return NEXT
 
         if a in model.IMAGE_ACTIONS:
             cond = self._image_cond(step, i, assets,
                                     "image_vanishes" if a == "Wait for Image to Vanish" else "image_appears")
             name = cond["image"]
             if a.startswith("If "):
-                ok, m = self._wait(cond, 0, 100, assets)
-                if m:
-                    self._highlight(m.rect)
-                found = ok
-                truth = found if a == "If Image Found" else not found
+                found = self._see_image(step, i, fr)
                 self.log(f"{tag}: {'found' if found else 'not found'}")
+                truth = found == (a == "If Image Found")
                 return self._goto(fr, step.get("goto") if truth else step.get("else_goto"), i)
             timeout = float(step.get("timeout_s", 10))
             ok, m = self._wait(cond, timeout, 200, assets)
@@ -1029,7 +1016,7 @@ class Runner(Job):
                 self.note(f"  found at {tx}, {ty} ({int(m.score * 100)}%)", detail=True)
                 if dry:
                     self.log(f"{tag}: found at {tx}, {ty} ({int(m.score * 100)}%), not clicked")
-                    return ("next", None)
+                    return NEXT
                 self.io.move_to(tx, ty)
                 time.sleep(0.02)
                 btn = step.get("button") or "left"
@@ -1037,19 +1024,17 @@ class Runner(Job):
                     self.io.click("left", 2)
                 else:
                     self.io.click(btn, 1)
-            return ("next", None)
+            return NEXT
 
         if a in ("Wait for Pixel Color", "If Pixel Color"):
-            cond = {"kind": "pixel_is", "x": x, "y": y, "color": step.get("color"),
-                    "tolerance": step.get("tolerance", 12)}
             if a == "If Pixel Color":
-                ok, _ = self._wait(cond, 0, 100, assets)
+                ok = self._see_pixel(step, fr)
                 return self._goto(fr, step.get("goto") if ok else step.get("else_goto"), i)
             timeout = float(step.get("timeout_s", 10))
-            ok, _ = self._wait(cond, timeout, 100, assets)
+            ok, _ = self._wait(self._pixel_cond(step), timeout, 100, assets)
             if not ok:
                 return ("fail", f"pixel {x}, {y} did not turn {step.get('color')} within {timeout:g} s")
-            return ("next", None)
+            return NEXT
 
         if a == "Wait for Screen to Settle":
             cond = {"kind": "region_stable", "region": step.get("region"),
@@ -1058,7 +1043,7 @@ class Runner(Job):
             ok, _ = self._wait(cond, timeout, 100, assets)
             if not ok:
                 return ("fail", f"screen kept changing for {timeout:g} s")
-            return ("next", None)
+            return NEXT
 
         if a in ("Wait for Text", "If Text on Screen"):
             return self._text_step(step, i, fr, tag)
@@ -1075,8 +1060,8 @@ class Runner(Job):
                     return ("fail", f"could not open {what}: {e}")
                 self.log(f"{tag}: opened {what}")
             if step.get("title") and not dry:
-                return self._wait_window(step, i, tag, str(step.get("title")), "")
-            return ("next", None)
+                return self._wait_window(step, tag, str(step.get("title")), "")
+            return NEXT
         if a == "Set Clipboard":
             text = self.substitute(step.get("value") or "")
             if not dry:
@@ -1085,7 +1070,7 @@ class Runner(Job):
                 except Exception as e:
                     return ("fail", f"could not set the clipboard: {e}")
             self.log(f"{tag}: \"{model._short(text, 40)}\"")
-            return ("next", None)
+            return NEXT
         if a == "Copy Clipboard to Variable":
             try:
                 text = clipboard.get()
@@ -1093,7 +1078,7 @@ class Runner(Job):
                 return ("fail", f"could not read the clipboard: {e}")
             self.values[step["var"]] = text
             self.log(f"{tag}: {{{step['var']}}} = \"{model._short(text, 60)}\"")
-            return ("next", None)
+            return NEXT
         if a == "Save Screenshot":
             region = step.get("region")
             try:
@@ -1106,25 +1091,18 @@ class Runner(Job):
                 return ("fail", f"could not save the screenshot: {e}")
             self.values["last_screenshot"] = path
             self.log(f"{tag}: saved {path}")
-            return ("next", None)
+            return NEXT
 
         if a == "Read Text":
-            region = step.get("region")
-            if region:
-                self.last_region = region
-            try:
-                text = vision.read_text(region, step.get("mode") or "text")
-            except vision.OcrUnavailable as e:
-                raise ScriptFailed(f"Step {i + 1}: {e}")
-            self.values[step["var"]] = text
+            text = self._read_screen_text(step, i)
             self.log(f"{tag}: {{{step['var']}}} = \"{model._short(text, 60)}\"")
-            if region:
-                self._highlight(tuple(region))
-            return ("next", None)
+            if step.get("region"):
+                self._highlight(tuple(step["region"]))
+            return NEXT
         if a == "Set Variable":
             self.values[step["var"]] = self.substitute(step.get("value"))
             self.note(f"  {{{step['var']}}} = \"{model._short(self.values[step['var']], 60)}\"", detail=True)
-            return ("next", None)
+            return NEXT
         if a == "Increment Variable":
             cur = to_number(self._var(step))
             if cur is None:
@@ -1133,7 +1111,7 @@ class Runner(Job):
                 cur = 0.0
             self.values[step["var"]] = fmt_number(cur + float(step.get("amount") or 0))
             self.note(f"  {{{step['var']}}} = {self.values[step['var']]}", detail=True)
-            return ("next", None)
+            return NEXT
         if a == "If Variable":
             truth = self._compare(step, i)
             self.note(f"  {'true' if truth else 'false'} ({{{step['var']}}} is \"{self._var(step)}\")", detail=True)
@@ -1141,11 +1119,11 @@ class Runner(Job):
 
         if a == "Delay":
             self.sleep(float(step.get("ms") or 0) / 1000.0 / self.speed)
-            return ("next", None)
+            return NEXT
         if a == "Random Delay":
             lo, hi = float(step.get("min_ms") or 0), float(step.get("max_ms") or 0)
             self.sleep(random.uniform(min(lo, hi), max(lo, hi)) / 1000.0 / self.speed)
-            return ("next", None)
+            return NEXT
         if a == "Go to Step":
             return self._goto(fr, step.get("goto"), i)
         if a == "Call Subroutine":
@@ -1162,7 +1140,7 @@ class Runner(Job):
                 fr.loops[i] = count + 1
                 return self._goto(fr, step.get("goto"), i)
             fr.loops[i] = 0
-            return ("next", None)
+            return NEXT
         if a == "Run Script File":
             if fr.depth >= 5:
                 raise ScriptFailed("Scripts are nested too deeply (more than 5 levels)")
@@ -1172,17 +1150,17 @@ class Runner(Job):
             sub, sub_assets = storage.load_script(path)
             self.log(f"{tag}: running {os.path.basename(path)}")
             self._run_steps(sub, sub_assets, fr.depth + 1)
-            return ("next", None)
+            return NEXT
         if a == "Show Notification":
             self.emit("notify", self.substitute(step.get("message")))
-            return ("next", None)
+            return NEXT
         if a == "Beep":
             self.io.beep()
-            return ("next", None)
+            return NEXT
         if a == "Show Desktop":
             if not dry:
                 self.io.show_desktop()
-            return ("next", None)
+            return NEXT
         if a == "Stop Script":
             raise JobStopped(f"Stop Script reached at step {i + 1}")
         raise ScriptFailed(f"Step {i + 1}: unknown action '{a}'")

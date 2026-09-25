@@ -4,7 +4,7 @@ Click a box to select its step, drag a box up or down to move the step, and drag
 handle onto another box to make it jump there (Go to, Loop Back, Call, and the jump style Ifs).
 """
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsObject, QGraphicsScene, QGraphicsView
 
@@ -141,7 +141,6 @@ class StepBox(QGraphicsObject):
 class FlowChart(QGraphicsView):
     """Boxes and arrows for the Action Script tab. It rebuilds from the script after every change."""
 
-    step_clicked = Signal(int)
 
     def __init__(self, tab):
         super().__init__()

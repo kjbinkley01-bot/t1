@@ -1,6 +1,6 @@
 """Liquid Glass rendering for the Qt interface.
 
-The look follows the Liquid Glass iOS 26 kit (assets/liquid_glass_tokens.json):
+The look follows the Liquid Glass iOS 26 kit:
 glass is a blurred, tinted view of the wallpaper *behind* a surface, lit along
 its rim from 315 degrees (top left), with large continuous radii. Content sits
 on top of the glass and is never blurred itself.
@@ -10,7 +10,6 @@ are rendered once per window size, so painting a glass panel is one clipped
 pixmap copy plus a few strokes.
 """
 
-import json
 import math
 import os
 import sys
@@ -20,18 +19,12 @@ import numpy as np
 from PySide6.QtCore import (QEasingCurve, QPoint, QPointF, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
                             QObject)
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontDatabase, QIcon, QImage, QLinearGradient, QPainter,
-                           QPainterPath, QPen, QPixmap, QRadialGradient)
+                           QPainterPath, QPen, QPixmap)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget
 
 ROOT = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 ASSETS = os.path.join(ROOT, "assets")
-
-try:
-    with open(os.path.join(ASSETS, "liquid_glass_tokens.json"), encoding="utf-8") as _f:
-        TOKENS = json.load(_f)
-except (OSError, ValueError):
-    TOKENS = {}
 
 ACCENT = QColor("#0088ff")   # accent/blue
 GREEN = QColor("#34c759")    # accent/green
@@ -239,11 +232,7 @@ class Backdrop(QObject):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._refit)
 
-    # compatibility: the frosted and sharp images that exactly cover the window, when ready
-    @property
-    def sharp(self):
-        return self.fit_sharp or self.base_sharp
-
+    # the frosted image that exactly covers the window, when ready
     @property
     def frost(self):
         return self.fit_frost or self.base_frost
@@ -516,12 +505,3 @@ class GlassPanel(QWidget):
         p.end()
 
 
-def radial_glow(p, center, radius, color):
-    g = QRadialGradient(center, radius)
-    c = QColor(color)
-    g.setColorAt(0, c)
-    c.setAlpha(0)
-    g.setColorAt(1, c)
-    p.setBrush(g)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.drawEllipse(center, radius, radius)

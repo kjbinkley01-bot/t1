@@ -1,5 +1,6 @@
 """Script packages (.clk / .clkpkg), recordings, assets, settings and validation."""
 
+import contextlib
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import zipfile
 
 from . import model, vision
 
-SCRIPT_EXTS = (".clk", ".clkpkg", ".json")
+SCRIPT_FILTER = "Clicker scripts (*.clk *.clkpkg *.json)"  # for file dialogs
 
 
 class AssetStore:
@@ -92,20 +93,26 @@ class AssetStore:
 
 # ---------------------------------------------------------------- zip helpers
 
-def _write_zip(path, json_name, data, assets, only=None):
-    folder = os.path.dirname(os.path.abspath(path)) or "."
-    fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=folder)
+@contextlib.contextmanager
+def _new_zip(path):
+    """A zip written to a temporary file that replaces path only once it is complete."""
+    fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=os.path.dirname(os.path.abspath(path)) or ".")
     os.close(fd)
     try:
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr(json_name, json.dumps(data, indent=2))
-            for name in assets.names():
-                if only is None or name in only:
-                    z.writestr(f"images/{name}", assets.raw(name))
+            yield z
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+def _write_zip(path, json_name, data, assets, only=None):
+    with _new_zip(path) as z:
+        z.writestr(json_name, json.dumps(data, indent=2))
+        for name in assets.names():
+            if only is None or name in only:
+                z.writestr(f"images/{name}", assets.raw(name))
 
 
 def _read_zip(path, json_names):
@@ -180,20 +187,12 @@ def save_recording(path, events, options, images=None, snaps=None):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=1)
         return
-    folder = os.path.dirname(os.path.abspath(path)) or "."
-    fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=folder)
-    os.close(fd)
-    try:
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("recording.json", json.dumps(data, indent=1))
-            for name, img in (images or {}).items():
-                z.writestr(f"images/{name}", img if isinstance(img, bytes) else vision.encode_png(img))
-            for name, jpg in (snaps or {}).items():
-                z.writestr(f"snaps/{name}", jpg, compress_type=zipfile.ZIP_STORED)
-        os.replace(tmp, path)
-    finally:
-        if os.path.exists(tmp):
-            os.remove(tmp)
+    with _new_zip(path) as z:
+        z.writestr("recording.json", json.dumps(data, indent=1))
+        for name, img in (images or {}).items():
+            z.writestr(f"images/{name}", img if isinstance(img, bytes) else vision.encode_png(img))
+        for name, jpg in (snaps or {}).items():
+            z.writestr(f"snaps/{name}", jpg, compress_type=zipfile.ZIP_STORED)
 
 
 def load_recording_full(path):

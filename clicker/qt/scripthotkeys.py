@@ -179,7 +179,7 @@ class ScriptHotkeysDialog(dialogs.GlassDialog):
         self._assign()
 
     def _add_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a script", "", "Clicker scripts (*.clk *.clkpkg *.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a script", "", storage.SCRIPT_FILTER)
         if path:
             self.add_path(path)
 

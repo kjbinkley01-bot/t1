@@ -150,10 +150,7 @@ def _relative_block(steps, sel):
     for i in sel:
         st = copy.deepcopy(steps[i])
         st["label"] = ""
-        boxes = [(st, key) for key in model.TARGET_KEYS if key in st]
-        if isinstance(st.get("wait"), dict) and "goto" in st["wait"]:
-            boxes.append((st["wait"], "goto"))
-        for box, key in boxes:
+        for box, key in model.step_target_slots(st):
             v = box.get(key)
             if isinstance(v, int) and not isinstance(v, bool) and (v - 1) in where:
                 box[key] = {"rel": where[v - 1]}
@@ -170,10 +167,7 @@ def _place_block(block, pos):
     out = []
     for st in block:
         st = copy.deepcopy(st)
-        boxes = [(st, key) for key in model.TARGET_KEYS if key in st]
-        if isinstance(st.get("wait"), dict) and "goto" in st["wait"]:
-            boxes.append((st["wait"], "goto"))
-        for box, key in boxes:
+        for box, key in model.step_target_slots(st):
             v = box.get(key)
             if isinstance(v, dict) and "rel" in v:
                 box[key] = {"abs": pos + int(v["rel"]) + 1}
@@ -184,10 +178,7 @@ def _place_block(block, pos):
 def _finish_abs(script):
     """Replace {"abs": n} markers left by _place_block with plain step numbers."""
     for st in script["steps"]:
-        boxes = [(st, key) for key in model.TARGET_KEYS if key in st]
-        if isinstance(st.get("wait"), dict) and "goto" in st["wait"]:
-            boxes.append((st["wait"], "goto"))
-        for box, key in boxes:
+        for box, key in model.step_target_slots(st):
             v = box.get(key)
             if isinstance(v, dict) and "abs" in v:
                 box[key] = int(v["abs"])

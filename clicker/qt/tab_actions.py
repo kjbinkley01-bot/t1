@@ -37,7 +37,7 @@ def detail_label(text):
     return lab
 
 
-def field(width=None, mono=False, placeholder=""):
+def field(width=None, placeholder=""):
     e = QLineEdit()
     if width:
         e.setFixedWidth(width)
@@ -1308,7 +1308,7 @@ class ActionTab(QWidget):
                 self.main.set_status(f"Could not read it: {e}", error=True)
 
     def browse_script(self, edit):
-        path, _ = QFileDialog.getOpenFileName(self, "Script to run", "", "Clicker scripts (*.clk *.clkpkg *.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Script to run", "", storage.SCRIPT_FILTER)
         if path:
             edit.setText(path)
 
@@ -1403,7 +1403,7 @@ class ActionTab(QWidget):
         if self.main.job_running_for(self) or not self.confirm_discard("opening another"):
             return
         path, _ = QFileDialog.getOpenFileName(self, "Open script", "",
-                                              "Clicker scripts (*.clk *.clkpkg *.json);;All files (*)")
+                                              storage.SCRIPT_FILTER + ";;All files (*)")
         if path:
             self.open_path(path)
 

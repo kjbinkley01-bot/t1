@@ -5,6 +5,7 @@ import os
 from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from .. import storage
 from .glass import font
 from .widgets import Caption, GlassButton
 
@@ -138,7 +139,7 @@ class RunsPanel(QFrame):
     def _pick(self):
         self.hide()
         path, _ = QFileDialog.getOpenFileName(self.main, "Run a script alongside", "",
-                                              "Clicker scripts (*.clk *.clkpkg *.json)")
+                                              storage.SCRIPT_FILTER)
         if path:
             self.main.run_script_hotkey(path, from_menu=True)
 

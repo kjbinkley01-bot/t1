@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QTreeWidget, QTreeWidgetItem, QWidget)
 
-from .. import schedule as sch
+from .. import schedule as sch, storage
 from . import dialogs
 from .widgets import Caption, GlassButton
 
@@ -149,7 +149,7 @@ class ScheduleDialog(dialogs.GlassDialog):
             self.refresh(select=sid)
 
     def _add(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a script", "", "Clicker scripts (*.clk *.clkpkg *.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a script", "", storage.SCRIPT_FILTER)
         if not path:
             return
         e = sch.new_entry(os.path.abspath(path))

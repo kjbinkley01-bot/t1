@@ -40,8 +40,7 @@ def _source():
 def _sct():
     s = getattr(_local, "sct", None)
     if s is None:
-        s = mss.mss()
-        _local.sct = s
+        s = _local.sct = (getattr(mss, "MSS", None) or mss.mss)()  # mss 10 renamed mss.mss
     return s
 
 
@@ -136,10 +135,6 @@ def encode_png(img):
     return buf.tobytes()
 
 
-def to_rgb(img):
-    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-
 class Match(namedtuple("Match", "x y w h score")):
     @property
     def center(self):
@@ -150,24 +145,32 @@ class Match(namedtuple("Match", "x y w h score")):
         return self.x, self.y, self.w, self.h
 
 
-def _match_once(h2, n2, ox, oy):
-    nh, nw = n2.shape[:2]
-    hh, hw = h2.shape[:2]
-    if nh > hh or nw > hw or nh == 0 or nw == 0:
-        return None
-    channels = 1 if n2.ndim == 2 else n2.shape[2]
-    if float(n2.reshape(-1, channels).std(axis=0).max()) < 1e-3:
-        # Flat single color template (in every channel): normalized correlation is undefined.
-        res = cv2.matchTemplate(h2, n2, cv2.TM_SQDIFF)
-        min_val, _, min_loc, _ = cv2.minMaxLoc(res)
-        rms = (min_val / (nw * nh * channels)) ** 0.5
-        score, loc = 1.0 - rms / 255.0, min_loc
-    else:
-        res = cv2.matchTemplate(h2, n2, cv2.TM_CCOEFF_NORMED)
-        res = np.nan_to_num(res, nan=-1.0, posinf=-1.0, neginf=-1.0)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        score, loc = float(max_val), max_loc
-    return Match(int(loc[0] + ox), int(loc[1] + oy), int(nw), int(nh), round(float(score), 3))
+def _score_map(hay, n):
+    """Match score at every position (1 = identical).
+
+    A flat one-color template has no pattern for normalized correlation to use, so it is scored
+    by color distance instead.
+    """
+    nh, nw = n.shape[:2]
+    channels = 1 if n.ndim == 2 else n.shape[2]
+    if float(n.reshape(-1, channels).std(axis=0).max()) < 1e-3:
+        res = cv2.matchTemplate(hay, n, cv2.TM_SQDIFF)
+        return 1.0 - np.sqrt(np.maximum(res, 0) / (nw * nh * channels)) / 255.0
+    return np.nan_to_num(cv2.matchTemplate(hay, n, cv2.TM_CCOEFF_NORMED), nan=-1.0, posinf=-1.0, neginf=-1.0)
+
+
+def _templates(hay, needle, grayscale, scales):
+    """(hay, template) for each size to try, in order, skipping sizes that cannot match."""
+    if grayscale:
+        hay = cv2.cvtColor(hay, cv2.COLOR_BGR2GRAY)
+        needle = cv2.cvtColor(needle, cv2.COLOR_BGR2GRAY)
+    hh, hw = hay.shape[:2]
+    for f in scales or (1.0,):
+        n2 = scaled(needle, float(f))
+        nh, nw = n2.shape[:2]
+        if nh > hh or nw > hw or nh == 0 or nw == 0 or (min(nh, nw) < 4 and abs(f - 1.0) > 1e-3):
+            continue
+        yield hay, n2
 
 
 _scaled_cache = {}
@@ -201,16 +204,11 @@ def match_in(hay, needle, confidence=0.9, grayscale=False, ox=0, oy=0, scales=No
     """
     if needle is None or hay is None:
         return None
-    if grayscale:
-        hay = cv2.cvtColor(hay, cv2.COLOR_BGR2GRAY)
-        needle = cv2.cvtColor(needle, cv2.COLOR_BGR2GRAY)
-    for f in scales or (1.0,):
-        n2 = scaled(needle, float(f))
-        if min(n2.shape[:2]) < 4 and abs(f - 1.0) > 1e-3:
-            continue
-        m = _match_once(hay, n2, ox, oy)
-        if m is not None and m.score >= confidence:
-            return m
+    for h2, n2 in _templates(hay, needle, grayscale, scales):
+        _, best, _, (x, y) = cv2.minMaxLoc(_score_map(h2, n2))
+        if best >= confidence:
+            nh, nw = n2.shape[:2]
+            return Match(int(x + ox), int(y + oy), int(nw), int(nh), round(float(best), 3))
     return None
 
 
@@ -237,22 +235,9 @@ def match_all_in(hay, needle, confidence=0.9, grayscale=False, ox=0, oy=0, scale
     """Every place needle shows in hay (best first), without overlapping duplicates."""
     if needle is None or hay is None:
         return []
-    if grayscale:
-        hay = cv2.cvtColor(hay, cv2.COLOR_BGR2GRAY)
-        needle = cv2.cvtColor(needle, cv2.COLOR_BGR2GRAY)
-    for f in scales or (1.0,):
-        n2 = scaled(needle, float(f))
+    for h2, n2 in _templates(hay, needle, grayscale, scales):
         nh, nw = n2.shape[:2]
-        hh, hw = hay.shape[:2]
-        if nh > hh or nw > hw or nh == 0 or nw == 0 or (min(nh, nw) < 4 and abs(f - 1.0) > 1e-3):
-            continue
-        channels = 1 if n2.ndim == 2 else n2.shape[2]
-        if float(n2.reshape(-1, channels).std(axis=0).max()) < 1e-3:
-            res = cv2.matchTemplate(hay, n2, cv2.TM_SQDIFF)
-            score = 1.0 - np.sqrt(np.maximum(res, 0) / (nw * nh * channels)) / 255.0
-        else:
-            score = np.nan_to_num(cv2.matchTemplate(hay, n2, cv2.TM_CCOEFF_NORMED), nan=-1.0,
-                                  posinf=-1.0, neginf=-1.0)
+        score = _score_map(h2, n2)
         ys, xs = np.nonzero(score >= confidence)
         if not len(xs):
             continue
@@ -385,10 +370,6 @@ class Checker:
                 hit = self.memory.get(self._mem_key(name))
                 if hit is not None:
                     self.last_by[name] = hit
-
-    @property
-    def last_match(self):
-        return self.last_by.get(self.matched_name) if self.matched_name else None
 
     def _names(self):
         return model.step_images(self.c)

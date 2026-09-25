@@ -49,11 +49,6 @@ def read_table(path, sheet=""):
     return names, table[1:]
 
 
-def rows_as_dicts(path, sheet=""):
-    names, rows = read_table(path, sheet)
-    return [dict(zip(names, r)) for r in rows]
-
-
 def _read_csv(path):
     with open(path, "rb") as f:
         raw = f.read()

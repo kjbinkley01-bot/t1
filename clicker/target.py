@@ -539,10 +539,6 @@ class WinBackend:
         self.user32.GetClientRect(hwnd, self.ct.byref(r))
         return r.right - r.left, r.bottom - r.top
 
-    def screen_to_client(self, hwnd, x, y):
-        ox, oy = self.client_origin(hwnd)
-        return x - ox, y - oy
-
     def _child_at(self, hwnd, x, y):
         """The deepest child window under a client point, and the point in its own client coordinates."""
         sx, sy = self.client_origin(hwnd)

@@ -148,14 +148,14 @@ def dead_end(events):
     return extra - 0.2 if extra > 0.5 else 0.0
 
 
-def trim_dead_ends(events):
-    """Cut the waiting before the first action and after the last one."""
+def trim_dead_ends(events, start=True, end=True):
+    """Cut the waiting before the first action and/or after the last one."""
     ts = _active_times(events)
     if not ts:
         return list(events)
-    start = dead_start(events)
-    end = ts[-1] + 0.2 if dead_end(events) else length(events)
-    return trim(events, start, end)
+    a = dead_start(events) if start else 0.0
+    b = ts[-1] + 0.2 if (end and dead_end(events)) else length(events)
+    return trim(events, a, b)
 
 
 def quiet_gaps(events, longer_than=GAP_LONGER):
@@ -283,9 +283,5 @@ def apply_suggestions(events, ids):
     if "gaps" in ids:
         ev = tighten_gaps(ev)
     if "start" in ids or "end" in ids:
-        ts = _active_times(ev)
-        if ts:
-            start = dead_start(ev) if "start" in ids else 0.0
-            end = ts[-1] + 0.2 if ("end" in ids and dead_end(ev)) else length(ev)
-            ev = trim(ev, start, end)
+        ev = trim_dead_ends(ev, "start" in ids, "end" in ids)
     return _round(balance(ev))

@@ -36,7 +36,6 @@ ACTION_GROUPS = [
         "Show Notification", "Beep", "Show Desktop", "Stop Script",
     ]),
 ]
-ALL_ACTIONS = [a for _, acts in ACTION_GROUPS for a in acts]
 ACTION_GROUP = {a: g for g, acts in ACTION_GROUPS for a in acts}
 
 # action: (button, click count, modifier keys)
@@ -68,8 +67,6 @@ SCROLL_MAP = {
     "Scroll Left": (-1, 0), "Scroll Right": (1, 0),
 }
 NEEDS_XY = set(DRAG_MAP) | {"Move Mouse", "Wait for Pixel Color", "If Pixel Color", "While Pixel Color"}
-XY_OPTIONAL = set(CLICK_MAP) | set(SCROLL_MAP)
-XY_IS_OFFSET = {"Move Mouse by Offset", "Click Image"}
 MOUSE_ACTIONS = set(CLICK_MAP) | set(DRAG_MAP) | set(SCROLL_MAP) | {
     "Move Mouse", "Move Mouse by Offset", "Move Mouse by Angle", "Click Image"}
 IMAGE_ACTIONS = {"Click Image", "Wait for Image", "Wait for Image to Vanish",
@@ -597,15 +594,18 @@ def resolve_target(steps, value, labels=None):
     return labels[name]
 
 
+def step_target_slots(st):
+    """(container, key) for every place one step stores a jump target, including its wait's go to."""
+    slots = [(st, key) for key in TARGET_KEYS if key in st]
+    if isinstance(st.get("wait"), dict) and "goto" in st["wait"]:
+        slots.append((st["wait"], "goto"))
+    return slots
+
+
 def _target_slots(script):
     """Yield (container, key) for every place a step number can live."""
     for st in script.get("steps", []):
-        for key in TARGET_KEYS:
-            if key in st:
-                yield st, key
-        w = st.get("wait")
-        if isinstance(w, dict) and "goto" in w:
-            yield w, "goto"
+        yield from step_target_slots(st)
     yield script, "error_handler"
 
 

@@ -6,6 +6,7 @@ import secrets
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem
 
+from .. import storage
 from . import dialogs
 from .widgets import Caption, GlassButton, GlassSwitch
 
@@ -98,7 +99,7 @@ class RemoteDialog(dialogs.GlassDialog):
         return [self.lst.item(k).data(256) for k in range(self.lst.count())]
 
     def _add(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a script", "", "Clicker scripts (*.clk *.clkpkg *.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a script", "", storage.SCRIPT_FILTER)
         if path and os.path.abspath(path) not in self._paths():
             self._add_item(os.path.abspath(path))
 

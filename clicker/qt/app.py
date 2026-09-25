@@ -1333,8 +1333,6 @@ class GlassApp(QMainWindow):
     # ------------------------------------------------------------ errors and recovery
 
     def _install_error_handlers(self):
-        self._prev_hook = sys.excepthook
-
         def hook(exc, val, tb):
             self._report_error(exc, val, tb)
         sys.excepthook = hook

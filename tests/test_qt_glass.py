@@ -19,11 +19,6 @@ def qapp():
     return QApplication.instance() or QApplication([])
 
 
-def test_tokens_from_the_kit_are_bundled():
-    assert glass.TOKENS["materials"]["regular"]["light_angle"] == 315
-    assert glass.TOKENS["color"]["accent/blue"] == "#0088ff"
-
-
 @pytest.mark.parametrize("scene", [k for k, _, _ in glass.WALLPAPERS])
 def test_wallpapers_render_and_match_their_mode(scene):
     img = glass.render_scene(scene, 320, 200)
@@ -35,7 +30,7 @@ def test_wallpapers_render_and_match_their_mode(scene):
 def test_backdrop_builds_sharp_and_frosted_copies(qapp):
     b = glass.Backdrop("aurora")
     b.resize(QSize(400, 300))
-    assert b.sharp.width() == 400 and b.frost.height() == 300
+    assert (b.fit_sharp or b.base_sharp).width() == 400 and b.frost.height() == 300
 
 
 def test_glass_brightens_its_rim_from_the_top_left(qapp):
