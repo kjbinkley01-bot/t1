@@ -5,7 +5,8 @@ Used by the loop and jump overview beside the step list. Pure functions over the
 
 from . import model
 
-KINDS = ("while", "if", "goto", "loop", "call", "timeout")
+KINDS = ("while", "if", "goto", "loop", "call", "timeout", "ifblock", "tryblock")
+BRACKETS = {"while", "ifblock", "tryblock"}   # drawn as brackets, not arrows
 LABEL = {"while": "While", "if": "If", "goto": "Go to", "loop": "Loop back", "call": "Call", "timeout": "On timeout"}
 UNCONDITIONAL_END = {"Go to Step", "Return", "Stop Script"}
 
@@ -23,15 +24,25 @@ def edges(steps):
     While blocks are one edge from the While to its End While (kind 'while').
     """
     labels = model.label_map(steps)
-    pairs, _err = model.match_blocks(steps)
+    blocks, _err = model.block_structure(steps)
+    pairs = blocks["pairs"]
     out = []
     for i, st in enumerate(steps):
         if st.get("disabled"):
             continue
         a = st.get("action", "")
+        if a == "If" and i in blocks["ifs"]:
+            out.append({"src": i, "dst": blocks["ifs"][i]["end"], "kind": "ifblock",
+                        "text": "If " + model.describe_check(st)})
+            continue
+        if a == "Try" and i in blocks["tries"]:
+            out.append({"src": i, "dst": blocks["tries"][i]["end"], "kind": "tryblock",
+                        "text": "Try" + (f", on error at step {blocks['tries'][i]['catch'] + 1}"
+                                         if blocks["tries"][i]["catch"] != blocks["tries"][i]["end"] else "")})
+            continue
         if a in model.BLOCK_STARTS and i in pairs and pairs[i] > i:
             out.append({"src": i, "dst": pairs[i], "kind": "while", "text": _short_while(st)})
-        if a.startswith("If "):
+        if a.startswith("If ") and a != "If":
             t = _target(steps, st.get("goto"), labels)
             if t is not None:
                 out.append({"src": i, "dst": t, "kind": "if", "text": f"{_short_if(st)}: yes → {_name(steps, t)}"})
@@ -107,7 +118,8 @@ def unreachable(script):
     if not n:
         return []
     labels = model.label_map(steps)
-    pairs, _err = model.match_blocks(steps)
+    blocks, _err = model.block_structure(steps)
+    pairs, ifs, tries = blocks["pairs"], blocks["ifs"], blocks["tries"]
     starts = [0]
     h = _target(steps, script.get("error_handler"), labels)
     if h is not None:
@@ -124,6 +136,23 @@ def unreachable(script):
         nxt = []
         if st.get("disabled"):
             nxt.append(i + 1)
+        elif a == "If" and i in ifs:
+            nxt.append(i + 1)
+            b = ifs[i]["next"]
+            while True:  # each later branch can be taken; its header step counts as visited
+                seen.add(b)
+                act = steps[b].get("action")
+                nxt.append(b + 1)
+                if act in ("Else", "End If"):
+                    break
+                b = ifs[b]["next"]
+        elif a in ("Else If", "Else") and i in ifs:
+            nxt.append(ifs[i]["end"] + 1)
+        elif a == "Try" and i in tries:
+            nxt += [i + 1, tries[i]["catch"] + 1]
+            seen.add(tries[i]["catch"])
+        elif a == "On Error" and i in tries:
+            nxt.append(tries[i]["end"] + 1)
         elif a in model.BLOCK_STARTS:
             nxt.append(i + 1)
             if i in pairs:

@@ -193,6 +193,9 @@ def compare(left, op, right):
     raise ValueError(f"Unknown comparison '{op}'")
 
 
+STRUCTURE_ONLY = {"Else", "End If", "Try", "On Error", "End Try"}  # these never wait before running
+
+
 def open_target(what, args=""):
     """Open an app, file, folder or web address the way double-clicking it would."""
     what = str(what or "").strip()
@@ -231,9 +234,11 @@ class _Frame:
         self.assets = assets
         self.depth = depth
         self.labels = model.label_map(self.steps)
-        self.pairs, err = model.match_blocks(self.steps)
+        blocks, err = model.block_structure(self.steps)
         if err:
             raise ScriptFailed(err)
+        self.pairs, self.ifs, self.tries = blocks["pairs"], blocks["ifs"], blocks["tries"]
+        self.try_stack = []  # Try steps whose body is running (innermost last)
         self.loops = {}
         self.whiles = {}
         self.rows = {}   # For Each Row state by step index
@@ -513,7 +518,16 @@ class Runner(Job):
             if self.run_log:
                 self.note(f"{'  ' * depth}Step {i + 1} {step['action']}"
                           + (f" [{step['label']}]" if step.get("label") else ""), detail=True)
-            res = self._exec_step(step, i, fr)
+            try:
+                res = self._exec_step(step, i, fr)
+            except JobStopped as e:
+                if not isinstance(e, ScriptFailed) or self.stop_event.is_set():
+                    raise
+                res = self._caught(fr, i, str(e))
+            except Exception as e:  # an unexpected error inside a Try is caught like a failure
+                if self.stop_event.is_set():
+                    raise
+                res = self._caught(fr, i, f"Error: {e}")
             kind, arg = res
             if kind == "next":
                 i += 1
@@ -532,6 +546,80 @@ class Runner(Job):
                 break
             else:
                 raise ScriptFailed(f"Step {i + 1}: unknown result {kind}")
+
+    def _caught(self, fr, i, message):
+        """A step failed: jump to the innermost On Error around it, or re-raise when there is none."""
+        while fr.try_stack:
+            t = fr.try_stack[-1]
+            body_end = fr.tries[t]["catch"]
+            if t < i < body_end:
+                fr.try_stack.pop()
+                self.values["error"] = message
+                self.log(f"Step {i + 1} failed ({message}); handled by the Try at step {t + 1}")
+                end = fr.tries[t]["end"]
+                return ("jump", body_end + 1) if body_end != end else ("jump", end + 1)
+            fr.try_stack.pop()  # a jump left that Try: it no longer applies
+        raise ScriptFailed(message)
+
+    def _check(self, step, i, fr):
+        """Evaluate an If / Else If check."""
+        c = step.get("check") or "variable"
+        if c.startswith("image"):
+            ok, m = self._wait(self._image_cond(step, i, fr.assets), 0, 100, fr.assets)
+            if m:
+                self._highlight(m.rect)
+            return ok if c == "image found" else not ok
+        if c == "pixel color":
+            cond = {"kind": "pixel_is", "x": step.get("x"), "y": step.get("y"), "color": step.get("color"),
+                    "tolerance": step.get("tolerance", 12)}
+            ok, _ = self._wait(cond, 0, 100, fr.assets)
+            return ok
+        if c == "variable":
+            return self._compare(step, i)
+        if c == "text on screen":
+            try:
+                text = self._read_screen_text(dict(step, var=""))
+            except vision.OcrUnavailable as e:
+                raise ScriptFailed(f"Step {i + 1}: {e}")
+            return compare(text, step.get("op") or "contains", self.substitute(step.get("value") or ""))
+        if c in ("window open", "window not open"):
+            hwnd = self._find_win(self.substitute(step.get("title") or ""), self.substitute(step.get("process") or ""))
+            return bool(hwnd) == (c == "window open")
+        raise ScriptFailed(f"Step {i + 1}: unknown check '{c}'")
+
+    def _block_step(self, step, i, fr, tag):
+        a = step["action"]
+        if a == "If":
+            b = i
+            while True:  # this branch, then each Else If / Else in turn
+                act = fr.steps[b]["action"]
+                if act == "End If":
+                    self.log(f"{tag}: no branch matched")
+                    return ("jump", b + 1)
+                if act == "Else":
+                    self.log(f"{tag}: else (step {b + 1})")
+                    return ("jump", b + 1)
+                if self._check(fr.steps[b], b, fr):
+                    self.log(f"{tag}: step {b + 1} is true")
+                    return ("jump", b + 1)
+                b = fr.ifs[b]["next"]
+        if a in ("Else If", "Else"):  # the branch above finished: skip the rest of the block
+            return ("jump", fr.ifs[i]["end"] + 1)
+        if a == "End If":
+            return ("next", None)
+        if a == "Try":
+            fr.try_stack.append(i)
+            return ("next", None)
+        if a == "On Error":  # the Try part finished without failing
+            if fr.try_stack and fr.tries.get(fr.try_stack[-1], {}).get("catch") == i:
+                fr.try_stack.pop()
+            return ("jump", fr.tries[i]["end"] + 1)
+        if a == "End Try":
+            for t in list(fr.try_stack)[::-1]:
+                if fr.tries.get(t, {}).get("end") == i:
+                    fr.try_stack.remove(t)
+            return ("next", None)
+        raise ScriptFailed(f"Step {i + 1}: unknown block step '{a}'")
 
     def _debug_pause(self, i):
         """Stop before step i until Continue or Step (a breakpoint, Run to here, or single stepping)."""
@@ -605,8 +693,8 @@ class Runner(Job):
             ok, _ = self._wait(model.wait_to_condition(w), timeout, w.get("poll_ms", 250), fr.assets)
             if not ok:
                 return ("fail", f"timed out after {timeout:g} s ({model.describe_wait(w)})")
-        delay = float(step.get("delay_ms") or 0)
-        if self.random_delay_ms:
+        delay = 0.0 if step["action"] in STRUCTURE_ONLY else float(step.get("delay_ms") or 0)
+        if self.random_delay_ms and delay:
             delay += random.uniform(-self.random_delay_ms, self.random_delay_ms)
         self.sleep(max(0.0, delay) / 1000.0 / self.speed)
         back = None
@@ -888,6 +976,8 @@ class Runner(Job):
             return ("jump", end + 1) if end + 1 < len(fr.steps) else ("end", None)
         if a in ("End While", "Next Row"):
             return ("jump", fr.pairs[i])
+        if a in model.IF_PARTS or a in model.TRY_PARTS:
+            return self._block_step(step, i, fr, tag)
         if a == "For Each Row":
             return self._for_each(step, i, fr, tag)
 

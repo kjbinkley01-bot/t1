@@ -33,10 +33,10 @@ def form_to_step(values, detail, has_image):
         "comment": str(v["comment"]).strip(),
         "label": str(v["label"]).strip(),
     }
-    for key, text, _w, kind in model.FIELD_SPECS.get(a, []):
-        raw = detail.get(key, model.DEFAULTS.get(key, ""))
+    for key, text, _w, kind in model.fields_for(a, detail):
+        raw = detail.get(key, model.ACTION_DEFAULTS.get(a, {}).get(key, model.DEFAULTS.get(key, "")))
         step[key] = model.parse_field(kind, raw, text)
-    if a in model.IMAGE_ACTIONS:
+    if a in model.IMAGE_ACTIONS or (a in ("If", "Else If") and str(step.get("check", "")).startswith("image")):
         for name in model.step_images(step):
             if not has_image(name):
                 raise ValueError(f"Image '{model.image_stem(name)}' is not in this script. Capture or Load it.")

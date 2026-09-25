@@ -26,6 +26,7 @@ ACTION_GROUPS = [
     ("Windows", ["Wait for Window", "If Window Open", "Focus Window", "Move Window", "Close Window"]),
     ("Apps and clipboard", ["Open", "Set Clipboard", "Copy Clipboard to Variable", "Save Screenshot"]),
     ("Variables", ["Set Variable", "Increment Variable", "If Variable"]),
+    ("Blocks", ["If", "Else If", "Else", "End If", "Try", "On Error", "End Try"]),
     ("Loops", [
         "While Image Found", "While Image Not Found", "While Pixel Color", "While Variable",
         "End While", "For Each Row", "Next Row", "Loop Back",
@@ -79,6 +80,19 @@ BLOCK_END = {a: "End While" for a in WHILE_ACTIONS}
 BLOCK_END["For Each Row"] = "Next Row"
 BLOCK_STARTS = set(BLOCK_END)          # steps that open a block
 BLOCK_ENDS = {"End While", "Next Row"}
+IF_PARTS = {"If", "Else If", "Else", "End If"}
+TRY_PARTS = {"Try", "On Error", "End Try"}
+CHECKS = ["image found", "image not found", "pixel color", "variable", "text on screen", "window open",
+          "window not open"]
+CHECK_FIELDS = {  # which of the If fields each check uses
+    "image found": {"image", "images", "image_mode", "region", "confidence"},
+    "image not found": {"image", "images", "image_mode", "region", "confidence"},
+    "pixel color": {"color", "tolerance"},
+    "variable": {"var", "op", "value"},
+    "text on screen": {"region", "mode", "op", "value"},
+    "window open": {"title", "process"},
+    "window not open": {"title", "process"},
+}
 TEXT_OPS = ["contains", "not contains", "=", "!=", "<", "<=", ">", ">="]
 SCREEN_ACTIONS = set(dict(ACTION_GROUPS)["Screen"]) | {"Read Text", "Wait for Text", "If Text on Screen", "While Image Found",
                                                       "While Image Not Found", "While Pixel Color"}
@@ -105,6 +119,14 @@ _TEXT = [("region", "Region", 16, "region"), ("mode", "Read as", 8, "choice:text
          ("op", "Is", 10, "choice:" + ",".join(TEXT_OPS)), ("value", "Value", 16, "text"),
          ("var", "Save text to", 12, "var_opt")]
 _WIN = [("title", "Title contains", 22, "text"), ("process", "Program", 14, "text")]
+_CHECK = [("check", "Check", 14, "choice:" + ",".join(CHECKS)),
+          ("image", "Image", 20, "image"), ("images", "Or these", 20, "images"),
+          ("image_mode", "Look for", 10, "choice:" + ",".join(IMAGE_MODES)),
+          ("region", "Region", 16, "region"), ("confidence", "Match %", 5, "percent"),
+          ("color", "Color", 9, "color"), ("tolerance", "Tolerance", 5, "int"),
+          ("var", "Variable", 14, "var"), ("mode", "Read as", 8, "choice:text,number"),
+          ("op", "Is", 10, "choice:" + ",".join(TEXT_OPS)), ("value", "Value", 14, "text"),
+          ("title", "Title contains", 20, "text"), ("process", "Program", 14, "text")]
 
 # action: list of (key, label, width, kind)
 FIELD_SPECS = {
@@ -157,6 +179,9 @@ FIELD_SPECS = {
     "Save Screenshot": [("region", "Region", 16, "region"), ("file", "Save to", 40, "text")],
     "For Each Row": [("file", "Spreadsheet", 30, "datafile"), ("sheet", "Sheet", 10, "text"),
                      ("start_row", "From row", 5, "int"), ("max_rows", "Max rows", 5, "int")],
+    "If": _CHECK,
+    "Else If": _CHECK,
+    "Try": [],
     "Run Script File": [("file", "File", 40, "file")],
     "Show Notification": [("message", "Message", 44, "text")],
 }
@@ -167,11 +192,21 @@ DEFAULTS = {
     "button": "left", "goto": "", "else_goto": "", "region": "", "image": "",
     "text": "", "keys": "", "file": "", "message": "", "color": "",
     "var": "", "value": "", "op": "=", "mode": "text", "max_loops": "0",
-    "title": "", "process": "", "args": "", "sheet": "", "start_row": "1", "max_rows": "0",
+    "title": "", "process": "", "args": "", "check": "variable", "sheet": "", "start_row": "1", "max_rows": "0",
 }
 
 # per action defaults that differ from DEFAULTS
 ACTION_DEFAULTS = {"Wait for Text": {"op": "contains"}, "If Text on Screen": {"op": "contains"}}
+
+
+def fields_for(action, values=None):
+    """The form fields an action shows. If / Else If show only what their Check needs."""
+    spec = FIELD_SPECS.get(action, [])
+    if action not in ("If", "Else If"):
+        return spec
+    check = (values or {}).get("check") or DEFAULTS["check"]
+    keep = CHECK_FIELDS.get(check, set()) | {"check"}
+    return [f for f in spec if f[0] in keep]
 
 ACTION_HINTS = {
     "Click Image": "X and Y are an optional offset from the center of the match. Add more images under "
@@ -218,6 +253,15 @@ ACTION_HINTS = {
     "While Pixel Color": "Repeats the steps down to End While while the pixel has this color.",
     "While Variable": "Repeats the steps down to End While while the comparison is true.",
     "End While": "Marks the end of the nearest While above it.",
+    "If": "Runs the steps below it when the check is true, down to Else If, Else or End If. Pixel color uses X "
+          "and Y above.",
+    "Else If": "Checked only when the If (and Else Ifs) above it were false.",
+    "Else": "Runs when none of the checks above it in this If were true.",
+    "End If": "Ends the nearest If block above it.",
+    "Try": "If a step between Try and On Error fails, the script jumps to the steps after On Error instead of "
+           "stopping. {error} holds what went wrong.",
+    "On Error": "The steps below it (down to End Try) run only when a step in the Try part failed.",
+    "End Try": "Ends the nearest Try block above it.",
     "For Each Row": "Runs the steps down to Next Row once per row of a CSV or Excel file. The first row names "
                     "the columns: 'Email Address' becomes {email_address}. {row} is the row number, "
                     "{row_count} the total. From row 1 is the first row under the headers.",
@@ -605,27 +649,84 @@ def reorder(script, order):
 
 
 def match_blocks(steps):
-    """Pair each While with its End While. Returns ({index: partner}, error or None)."""
-    pairs, stack = {}, []
+    """Pair each loop start with its end. Returns ({index: partner}, error or None)."""
+    info, err = block_structure(steps)
+    return info["pairs"], err
+
+
+def block_structure(steps):
+    """Loops, If blocks and Try blocks, checked for nesting.
+
+    Returns (info, error or None) where info has
+      pairs: loop start <-> loop end
+      ifs:   for If / Else If / Else: {"next": the next branch or End If, "end": End If}; End If: {"end": itself}
+      tries: for Try: {"catch": On Error (or End Try), "end": End Try}; On Error: {"end": End Try}
+      depth: indentation level of every step
+    """
+    info = {"pairs": {}, "ifs": {}, "tries": {}, "depth": [0] * len(steps)}
+    stack = []  # [kind, index, parts]
+
+    def fail(msg):
+        return info, msg
     for i, st in enumerate(steps):
         a = st.get("action")
+        info["depth"][i] = len(stack)
         if st.get("disabled"):
             continue
         if a in BLOCK_STARTS:
-            stack.append(i)
+            stack.append(["loop", i, None])
         elif a in BLOCK_ENDS:
             opener = "While" if a == "End While" else "For Each Row"
-            if not stack:
-                return pairs, f"Step {i + 1}: {a} has no {opener} above it."
-            j = stack.pop()
+            if not stack or stack[-1][0] != "loop":
+                return fail(f"Step {i + 1}: {a} has no {opener} above it" +
+                            (f" (step {stack[-1][1] + 1} {steps[stack[-1][1]]['action']} is still open)."
+                             if stack else "."))
+            _k, j, _p = stack.pop()
+            info["depth"][i] = len(stack)
             if BLOCK_END[steps[j]["action"]] != a:
-                return pairs, (f"Step {i + 1}: {a} closes step {j + 1} ({steps[j]['action']}), which needs "
-                               f"{BLOCK_END[steps[j]['action']]}.")
-            pairs[i], pairs[j] = j, i
+                return fail(f"Step {i + 1}: {a} closes step {j + 1} ({steps[j]['action']}), which needs "
+                            f"{BLOCK_END[steps[j]['action']]}.")
+            info["pairs"][i], info["pairs"][j] = j, i
+        elif a == "If":
+            stack.append(["if", i, [i]])
+        elif a in ("Else If", "Else"):
+            if not stack or stack[-1][0] != "if":
+                return fail(f"Step {i + 1}: {a} has no If above it.")
+            parts = stack[-1][2]
+            if steps[parts[-1]]["action"] == "Else":
+                return fail(f"Step {i + 1}: {a} comes after Else (step {parts[-1] + 1}).")
+            parts.append(i)
+            info["depth"][i] = len(stack) - 1
+        elif a == "End If":
+            if not stack or stack[-1][0] != "if":
+                return fail(f"Step {i + 1}: End If has no If above it.")
+            _k, _j, parts = stack.pop()
+            info["depth"][i] = len(stack)
+            for k, b in enumerate(parts):
+                info["ifs"][b] = {"next": parts[k + 1] if k + 1 < len(parts) else i, "end": i}
+            info["ifs"][i] = {"end": i}
+        elif a == "Try":
+            stack.append(["try", i, [i]])
+        elif a == "On Error":
+            if not stack or stack[-1][0] != "try" or len(stack[-1][2]) > 1:
+                return fail(f"Step {i + 1}: On Error has no Try above it.")
+            stack[-1][2].append(i)
+            info["depth"][i] = len(stack) - 1
+        elif a == "End Try":
+            if not stack or stack[-1][0] != "try":
+                return fail(f"Step {i + 1}: End Try has no Try above it.")
+            _k, j, parts = stack.pop()
+            info["depth"][i] = len(stack)
+            catch = parts[1] if len(parts) > 1 else i
+            info["tries"][j] = {"catch": catch, "end": i}
+            if catch != i:
+                info["tries"][catch] = {"end": i}
     if stack:
-        a = steps[stack[-1]]["action"]
-        return pairs, f"Step {stack[-1] + 1}: {a} has no {BLOCK_END[a]}."
-    return pairs, None
+        kind, j, _p = stack[-1]
+        a = steps[j]["action"]
+        need = {"loop": BLOCK_END.get(a, "an end"), "if": "End If", "try": "End Try"}[kind]
+        return fail(f"Step {j + 1}: {a} has no {need}.")
+    return info, None
 
 
 def check_step(step, steps=None, labels=None):
@@ -662,6 +763,22 @@ def check_step(step, steps=None, labels=None):
         return "Enter part of the window title, or the program name."
     if a == "Move Window" and not step.get("region"):
         return "Draw where the window should go."
+    if a in ("If", "Else If"):
+        c = step.get("check") or "variable"
+        if c not in CHECKS:
+            return f"Unknown check '{c}'."
+        if c.startswith("image") and not step.get("image"):
+            return "Choose the image to look for."
+        if c == "pixel color" and (step.get("x") is None or step.get("y") is None or not step.get("color")):
+            return "Pixel color needs X, Y and a color."
+        if c == "variable" and not NAME_RE.match(str(step.get("var") or "")):
+            return "Enter a variable name (letters, digits and _)."
+        if c == "text on screen" and not str(step.get("value") or "").strip():
+            return "Enter the text or number to look for."
+        if c.startswith("window") and not (str(step.get("title") or "").strip()
+                                           or str(step.get("process") or "").strip()):
+            return "Enter part of the window title, or the program name."
+        return None
     if a == "For Each Row" and not str(step.get("file") or "").strip():
         return "Choose the CSV or Excel file to loop over."
     if a == "Open" and not str(step.get("file") or "").strip():
@@ -798,6 +915,8 @@ def describe_action(step):
         if a == "Move Window":
             return f"{who} to {format_region(step.get('region'))}"
         return who
+    if a in ("If", "Else If"):
+        return describe_check(step)
     if a == "For Each Row":
         name = str(step.get("file", "")).replace("\\", "/").split("/")[-1]
         extra = f", sheet {step['sheet']}" if step.get("sheet") else ""
@@ -820,6 +939,27 @@ def describe_action(step):
     return ""
 
 
+def describe_check(step):
+    c = step.get("check") or "variable"
+    if c.startswith("image"):
+        imgs = step_images(step)
+        what = image_stem(imgs[0]) if imgs else "?"
+        if len(imgs) > 1:
+            what += f" +{len(imgs) - 1}"
+        return f"{what} is {'on screen' if c == 'image found' else 'not on screen'}"
+    if c == "pixel color":
+        return f"pixel {step.get('x')}, {step.get('y')} is {step.get('color')}"
+    if c == "variable":
+        return f"{{{step.get('var')}}} {step.get('op', '=')} \"{_short(step.get('value'), 16)}\""
+    if c == "text on screen":
+        where = format_region(step.get("region")) or "screen"
+        return f"{where} {step.get('op', 'contains')} \"{_short(step.get('value'), 16)}\""
+    if c.startswith("window"):
+        who = " · ".join(v for v in (str(step.get("title") or ""), str(step.get("process") or "")) if v)
+        return f"{who} is {'open' if c == 'window open' else 'not open'}"
+    return c
+
+
 def describe_step(step):
     """Return (x text, y text, condition text) for the step table."""
     a = step["action"]
@@ -835,6 +975,8 @@ def describe_step(step):
     act = describe_action(step)
     if wait and act:
         cond = f"{wait}; {act}"
+    elif a in ("Else", "End If", "Try", "On Error", "End Try", "End While", "Next Row") and not wait:
+        cond = ""
     else:
         cond = wait or act or f"Delay {step.get('delay_ms', 0)} ms"
     return xt, yt, cond

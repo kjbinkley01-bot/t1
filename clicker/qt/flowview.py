@@ -8,9 +8,11 @@ from .. import flow
 from .widgets import Caption, GlassButton
 
 COLORS = {"while": QColor("#7fdcff"), "if": QColor("#ff9f0a"), "goto": QColor("#d7a8ff"),
-          "loop": QColor("#ff9fcf"), "call": QColor("#7ee787"), "timeout": QColor("#ffd60a")}
+          "loop": QColor("#ff9fcf"), "call": QColor("#7ee787"), "timeout": QColor("#ffd60a"),
+          "ifblock": QColor("#ffc46b"), "tryblock": QColor("#a0e7a0")}
 LIGHT = {"while": QColor("#0070b8"), "if": QColor("#c25e00"), "goto": QColor("#7a3fc0"),
-         "loop": QColor("#c0397a"), "call": QColor("#1f8a3a"), "timeout": QColor("#a37b00")}
+         "loop": QColor("#c0397a"), "call": QColor("#1f8a3a"), "timeout": QColor("#a37b00"),
+         "ifblock": QColor("#b0660a"), "tryblock": QColor("#2f7d32")}
 LANE_W = 11
 MAX_LANES = 8
 
@@ -90,7 +92,7 @@ class FlowRail(QWidget):
             path.quadTo(x, y2, x + r, y2)
             path.lineTo(right, y2)
             p.drawPath(path)
-            if e["kind"] != "while":  # arrow head where it lands
+            if e["kind"] not in flow.BRACKETS:  # arrow head where it lands
                 p.setPen(QPen(c, 2.2 if hot else 1.6))
                 p.drawLine(QPointF(right - 5, y2 - 4), QPointF(right, y2))
                 p.drawLine(QPointF(right - 5, y2 + 4), QPointF(right, y2))
@@ -157,7 +159,8 @@ class FlowPanel(QWidget):
         dark = self.tab.main.mode.dark
         self.lst.clear()
         for e in sorted(edges, key=lambda e: (e["src"], e["dst"])):
-            span = f"{e['src'] + 1}–{e['dst'] + 1}" if e["kind"] == "while" else f"{e['src'] + 1} → {e['dst'] + 1}"
+            span = (f"{e['src'] + 1}–{e['dst'] + 1}" if e["kind"] in flow.BRACKETS
+                    else f"{e['src'] + 1} → {e['dst'] + 1}")
             it = QListWidgetItem(_dot(color(e["kind"], dark)), f"{span}   {e['text']}")
             it.setToolTip(e["text"])
             it.setData(Qt.ItemDataRole.UserRole, (e["src"], e["dst"]))

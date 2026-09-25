@@ -612,7 +612,7 @@ class ActionTab(QWidget):
             self.detail_values[k] = e.currentText() if isinstance(e, QComboBox) else e.text()
         clear_layout(self.details)
         self.detail_edits = {}
-        spec = model.FIELD_SPECS.get(action, [])
+        spec = model.fields_for(action, self.detail_values)
         row, col = -1, 99
         for key, text, width, kind in spec:
             cost = 2 if kind in ("image", "region", "images") else 1
@@ -671,6 +671,9 @@ class ActionTab(QWidget):
             self.details.addLayout(box, row, col * 3 + 1, 1, cost * 3 - 1)
             self.detail_edits[key] = w
             col += cost
+        chk = self.detail_edits.get("check")
+        if chk is not None:  # If / Else If: the fields follow the chosen check
+            chk.currentTextChanged.connect(lambda _t: QTimer.singleShot(0, self._on_action_change))
         self.lbl_hint.setText(model.ACTION_HINTS.get(action, ""))
         self.lbl_hint.setVisible(bool(self.lbl_hint.text()))
         if hasattr(self.main, "update_min_width"):
@@ -1022,7 +1025,8 @@ class ActionTab(QWidget):
     def _row(self, i, s, labels):
         xt, yt, cond = model.describe_step(s)
         back = ("Yes" if s.get("cursor_back") else "No") if s["action"] in model.MOUSE_ACTIONS else ""
-        texts = (str(i + 1), s.get("label", ""), s["action"], xt, yt, back, str(s.get("delay_ms", 0)),
+        depth = self._depth[i] if i < len(getattr(self, "_depth", [])) else 0
+        texts = (str(i + 1), s.get("label", ""), "    " * depth + s["action"], xt, yt, back, str(s.get("delay_ms", 0)),
                  str(s.get("repeat", 1)), cond, s.get("comment", ""))
         flag = "error" if model.check_step(s, self.script["steps"], labels) else (
             "dead" if i in self._dead else ("screen" if model.is_screen_step(s) else ""))
@@ -1057,6 +1061,7 @@ class ActionTab(QWidget):
         edges = flow.edges(steps)
         dead = flow.unreachable(self.script)
         self._dead = set(dead)
+        self._depth = model.block_structure(steps)[0]["depth"]
         self.rail.set_edges(edges)
         self.flow_panel.set_flow(steps, edges, dead)
 
@@ -1510,7 +1515,8 @@ class ActionTab(QWidget):
         one = model.copy_script(self.script)
         step = copy.deepcopy(one["steps"][i])
         if step["action"] in model.BLOCK_STARTS or step["action"] in model.BLOCK_ENDS or step["action"] in (
-                "Go to Step", "Loop Back", "Call Subroutine", "Return"):
+                "Go to Step", "Loop Back", "Call Subroutine", "Return") or step["action"] in model.IF_PARTS \
+                or step["action"] in model.TRY_PARTS:
             self.main.set_status("Loops and jumps can only be tested by running the script.", error=True)
             return
         w = step.get("wait") or {}
