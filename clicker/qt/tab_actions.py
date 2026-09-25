@@ -485,6 +485,9 @@ class ActionTab(QWidget):
             b = GlassButton(text, icon=ic, small=True)
             b.clicked.connect(cmd)
             side.addWidget(b)
+        b = GlassButton("Snippets", icon="list-bullets", small=True, tip="Save steps to reuse, or insert saved ones")
+        b.clicked.connect(lambda _=False, btn=b: self.snippet_menu(btn))
+        side.addWidget(b)
         side.addSpacing(6)
         for text, cmd in (("Delete", self.delete_step), ("Delete All", self.delete_all)):
             b = GlassButton(text, icon="trash", kind="danger", small=True)
@@ -820,6 +823,75 @@ class ActionTab(QWidget):
         self._refresh_image_lists()
         self.changed(new)
         self.main.set_status(f"Pasted {len(new)} step{'s' if len(new) != 1 else ''}")
+
+    # ------------------------------------------------------------ snippets
+
+    def snippet_menu(self, btn):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QMenu
+        from .. import snippets
+        m = QMenu(self)
+        sel = self._selection()
+        a = m.addAction(f"Save {len(sel)} selected step{'s' if len(sel) != 1 else ''} as a snippet..."
+                        if sel else "Select steps to save them as a snippet")
+        a.setEnabled(bool(sel))
+        a.triggered.connect(self.save_snippet)
+        names = snippets.names()
+        if names:
+            m.addSeparator()
+            where = f"after step {sel[-1] + 1}" if sel else "at the end"
+            head = m.addAction(f"Insert {where}:")
+            head.setEnabled(False)
+            for n in names:
+                m.addAction(f"   {n}  ({snippets.count(n)} steps)", lambda x=n: self.insert_snippet(x))
+            m.addSeparator()
+            dm = m.addMenu("Delete a snippet")
+            for n in names:
+                dm.addAction(n, lambda x=n: self._delete_snippet(x))
+        m.exec(btn.mapToGlobal(QPoint(0, btn.height() + 4)))
+
+    def save_snippet(self):
+        from .. import snippets
+        sel = self._selection()
+        if not sel:
+            return
+        name = dialogs.ask_string(self.main, "Save snippet", "Snippet name (e.g. Log in, Bank and return)",
+                                  self.script["steps"][sel[0]].get("label") or "")
+        if not name:
+            return
+        if name in snippets.names() and QMessageBox.question(
+                self, "Replace snippet?", f"There is already a snippet called {name}. Replace it?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        snippets.save(name, self.script, self.assets, sel)
+        self.main.set_status(f"Saved snippet {name} ({len(sel)} steps)")
+
+    def insert_snippet(self, name):
+        from .. import snippets
+        if not self._editable():
+            return
+        sel = self._selection()
+        pos = sel[-1] + 1 if sel else len(self.script["steps"])
+        self._record()
+        try:
+            new = snippets.insert(name, self.script, self.assets, pos)
+        except (OSError, ValueError) as e:
+            self.history.discard_last()
+            self.main.set_status(f"Could not insert {name}: {e}", error=True)
+            return
+        if not new:
+            self.history.discard_last()
+            return
+        self._refresh_image_lists()
+        self.changed(new)
+        self.main.set_status(f"Inserted {name} ({len(new)} steps)")
+
+    def _delete_snippet(self, name):
+        from .. import snippets
+        if QMessageBox.question(self, "Delete snippet?", f"Delete the snippet {name}?") \
+                == QMessageBox.StandardButton.Yes:
+            snippets.delete(name)
+            self.main.set_status(f"Deleted snippet {name}")
 
     def _shortcuts(self):
         ctx = Qt.ShortcutContext.WidgetWithChildrenShortcut

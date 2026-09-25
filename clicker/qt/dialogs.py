@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
-from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QVBoxLayout, QWidget)
 
 from .. import model, runlog, vision
@@ -257,6 +257,18 @@ class SettingsDialog(GlassDialog):
         arow.addWidget(self.lbl_alerts, 1)
         self.body.addLayout(arow)
         self.body.addSpacing(6)
+        self.body.addWidget(Caption("Backup"))
+        brow = QHBoxLayout()
+        for text, ic, cmd in (("Export everything...", "floppy-disk", self._export), ("Import backup...",
+                                                                                       "download-simple", self._import)):
+            b = GlassButton(text, icon=ic, small=True)
+            b.clicked.connect(cmd)
+            brow.addWidget(b)
+        lab = QLabel("Settings, hotkeys, rules, snippets, history and your scripts, in one file")
+        lab.setProperty("role", "detail")
+        brow.addWidget(lab, 1)
+        self.body.addLayout(brow)
+        self.body.addSpacing(6)
         self.body.addWidget(Caption("Updates"))
         self.sw_upd = GlassSwitch("Check GitHub for a new version once a day")
         self.sw_upd.setChecked(s.get("check_updates", True))
@@ -313,6 +325,52 @@ class SettingsDialog(GlassDialog):
         self.body.addSpacing(6)
         self.body.addWidget(ocr)
         self.add_buttons("Save")
+
+    def _export(self):
+        import datetime
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from .. import backup, storage
+        name = f"clicker-{datetime.date.today():%Y-%m-%d}.clkbackup"
+        path, _ = QFileDialog.getSaveFileName(self, "Export everything", name, "Clicker backup (*.clkbackup)")
+        if not path:
+            return
+        self.main.save_settings()
+        self.main.save_rules()
+        try:
+            summary = backup.export(path, storage.data_dir(), self.main.settings)
+        except Exception as e:
+            QMessageBox.warning(self, "Could not export", str(e))
+            return
+        self.main.set_status(f"Backup saved: {summary}")
+
+    def _import(self):
+        import os
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from .. import backup, storage
+        path, _ = QFileDialog.getOpenFileName(self, "Import backup", "", "Clicker backup (*.clkbackup)")
+        if not path:
+            return
+        if QMessageBox.question(self, "Import backup?", "This replaces your settings, hotkeys, trigger rules, "
+                                "snippets and history with the ones in the backup. Continue?") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Where should the backed up scripts go?",
+                                                  os.path.join(os.path.expanduser("~"), "Documents"))
+        if not folder:
+            return
+        try:
+            settings, summary = backup.restore(path, storage.data_dir(), os.path.join(folder, "Clicker scripts"))
+        except Exception as e:
+            QMessageBox.warning(self, "Could not import", str(e))
+            return
+        self.main.apply_imported(settings)
+        QMessageBox.information(self, "Backup imported", f"Restored {summary}. The wallpaper and look change the "
+                                "next time Clicker starts.")
+        self.reject()
 
     def _alerts_text(self):
         from .. import alerts

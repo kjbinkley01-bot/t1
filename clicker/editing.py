@@ -247,6 +247,8 @@ def paste(script, assets, text, pos):
         for holder in (st, st.get("wait") if isinstance(st.get("wait"), dict) else None):
             if holder and model.image_name(holder.get("image")) in rename:
                 holder["image"] = rename[model.image_name(holder["image"])]
+        if st.get("images"):
+            st["images"] = [rename.get(model.image_name(n), n) for n in st["images"]]
         fixed.append(st)
     # check each step's shape the same way loading a file does, keeping the jump markers
     shells = model.normalize_script({"steps": _strip_markers(fixed)})["steps"]

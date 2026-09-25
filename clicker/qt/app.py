@@ -939,6 +939,27 @@ class GlassApp(QMainWindow):
             self.set_status(f"Started {name}")
             self.tray.message("Clicker", f"Started {name}")
 
+    def apply_imported(self, settings):
+        """Use settings (and the rule file) from an imported backup without restarting."""
+        self.settings.clear()
+        self.settings.update(storage.load_settings())
+        self.settings.update(settings)
+        self.save_settings()
+        self.hotkeys.bindings = dict(self.settings["hotkeys"])
+        self.apply_script_hotkeys()
+        try:
+            rules, assets = storage.load_triggers(storage.triggers_path())
+        except Exception:
+            rules, assets = [], storage.AssetStore()
+        self.rules[:] = rules
+        for n in self.trigger_assets.names():
+            self.trigger_assets.remove(n)
+        for n in assets.names():
+            self.trigger_assets.add_bytes(n, assets.raw(n))
+        self.triggers_tab.refresh_rules()
+        self.history_tab.reload()
+        self.import_tab._refresh_recent()
+
     def update_tray(self):
         if self.settings.get("tray_on_close") or scripthotkeys.bindings(self.settings):
             self.tray.ensure()
