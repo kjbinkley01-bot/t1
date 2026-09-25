@@ -92,3 +92,20 @@ def test_home_row_shows_scripts_favorites_first(qapp, tmp_path):
     cards[1].clicked.emit(cards[1])
     assert opened[0]["name"] == "Beta"
     assert LibraryHome(Main(library.Library(str(tmp_path / "empty")))).refresh() is False
+
+
+def test_versions_dialog_lists_kept_copies(qapp, tmp_path, monkeypatch):
+    import time
+    from clicker import versions
+    from clicker.qt.library_dialog import VersionsDialog
+    monkeypatch.setattr(versions.storage, "data_dir", lambda: str(tmp_path / "data"))
+    p = make_script(tmp_path / "farm.clk", "Farm", pictures=False, n=2)
+    versions.keep(p)
+    time.sleep(0.01)
+    make_script(tmp_path / "farm.clk", "Farm", pictures=False, n=5)
+    versions.keep(p)
+    d = VersionsDialog(Main(library.Library(str(tmp_path / "lib"))), p, "script")
+    assert d.list.count() == 2 and "5 steps" in d.list.item(0).text() and "2 steps" in d.list.item(1).text()
+    d.list.setCurrentRow(1)
+    d.accept()
+    assert d.chosen["file"] == versions.list_versions(p)[1]["file"]

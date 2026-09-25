@@ -39,6 +39,9 @@ class Main(QWidget):
     def toggle_pause(self):
         pass
 
+    def keep_version(self, path):
+        pass
+
 
 def make_tab(tmp_path, n=3):
     lib = library.Library(str(tmp_path / "data"))

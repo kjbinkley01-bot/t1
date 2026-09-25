@@ -1471,6 +1471,18 @@ class ActionTab(QWidget):
             return
         self.open_path(path)
 
+    def open_version(self, path, copy):
+        """Bring back an earlier copy of the script at path (unsaved until you save)."""
+        try:
+            script, assets = storage.load_script(copy)
+        except Exception as e:
+            QMessageBox.warning(self, "Could not open that version", str(e))
+            return False
+        self.set_script(script, assets, path)
+        self.dirty = True
+        self.main.update_title()
+        return True
+
     def open_path(self, path):
         try:
             script, assets = storage.load_script(path)
@@ -1499,6 +1511,7 @@ class ActionTab(QWidget):
         if self.script.get("name") in (None, "", "Untitled"):
             self.script["name"] = os.path.splitext(os.path.basename(path))[0]
         try:
+            self.main.keep_version(path)
             storage.save_script(path, self.script, self.assets)
         except Exception as e:
             QMessageBox.warning(self, "Could not save", str(e))

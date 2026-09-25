@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter,
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import alerts, clipboard, library, model, storage, updates, vision
+from .. import alerts, clipboard, library, model, storage, updates, versions, vision
 from . import motion, scripthotkeys
 from ..core import PROGRESS_ONLY, CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
@@ -1096,6 +1096,27 @@ class GlassApp(QMainWindow):
             self.library.set_favorite(p, True)
         self._save_library()
         self.settings["library_ready"] = True
+
+    def keep_version(self, path):
+        """Keep the copy a save is about to replace (Earlier versions in the Library)."""
+        try:
+            versions.keep(path)
+        except OSError:
+            pass  # never block a save over its history
+
+    def show_versions(self, path, kind):
+        from .library_dialog import VersionsDialog
+        d = VersionsDialog(self, path, kind)
+        d.exec()
+        if d.chosen:
+            key = self.TAB_FOR.get(kind, "actions")
+            tab = self.tabs[key]
+            if key == "actions" and (self.job_running_for(tab) or not tab.confirm_discard("going back")):
+                return
+            self.show_tab(key)
+            if tab.open_version(path, d.chosen["file"]):
+                self.set_status(f"Back to the version from {versions.when_text(d.chosen['when'])}. "
+                                "Save to keep it (the current one is kept as a version too).")
 
     def _save_library(self):
         try:

@@ -47,6 +47,11 @@ def commands(main):
         "step through breakpoint")
     add("Clear breakpoints", "Action Script", on("actions", a.clear_breakpoints))
     add("Open run logs", "Action Script", a.open_logs, keywords="log folder screenshot failure")
+    for key, tab, kind in (("actions", a, "script"), ("recorder", r, "recording"),
+                           ("chains", main.chains_tab, "chain")):
+        if tab.path and main.current_tab == key:
+            add("Earlier versions of this file", "File", lambda p=tab.path, k=kind: main.show_versions(p, k),
+                keywords="history undo restore backup previous")
     add("Stop recording" if main.recording_active() else "Start recording", "Macro Recorder",
         on("recorder", r.toggle_record), "F9", "record macro")
     add("Play the recording", "Macro Recorder", on("recorder", r.toggle_play), "F10", "replay playback")

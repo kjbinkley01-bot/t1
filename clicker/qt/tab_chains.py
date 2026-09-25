@@ -572,6 +572,19 @@ class ChainsTab(QWidget):
         if not self.running() and self.confirm_discard("opening another"):
             self.open_path(path)
 
+    def open_version(self, path, copy):
+        if self.running() or not self.confirm_discard("going back to an earlier version"):
+            return False
+        try:
+            chain = chains.load(copy)
+        except Exception as e:
+            QMessageBox.warning(self, "Could not open that version", str(e))
+            return False
+        self.set_chain(chain, path)
+        self.dirty = True
+        self.main.update_title()
+        return True
+
     def open_path(self, path):
         try:
             chain = chains.load(path)
@@ -594,6 +607,7 @@ class ChainsTab(QWidget):
         if self.chain["name"] == "Untitled chain":
             self.chain["name"] = os.path.splitext(os.path.basename(path))[0]
         try:
+            self.main.keep_version(path)
             chains.save(path, self.chain)
         except Exception as e:
             QMessageBox.warning(self, "Could not save", str(e))

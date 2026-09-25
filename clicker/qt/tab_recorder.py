@@ -437,7 +437,15 @@ class RecorderTab(QWidget):
         if not self._busy_or_keep():
             self.open_path(path)
 
-    def open_path(self, path):
+    def open_version(self, path, copy):
+        if self._busy_or_keep():
+            return False
+        self.open_path(copy, remember=False)
+        self.path, self.dirty = path, True
+        self.main.update_title()
+        return True
+
+    def open_path(self, path, remember=True):
         try:
             events, options, images, snaps = storage.load_recording_full(path)
         except Exception as e:
@@ -454,7 +462,8 @@ class RecorderTab(QWidget):
         self._note(f"Opened {os.path.basename(path)}"
                    + (f", recorded in {target.describe(self.recorded_in)}." if self.recorded_in else "."))
         self.main.update_title()
-        self.main.remember(path, "recording", library.recording_info(events, images, snaps))
+        if remember:
+            self.main.remember(path, "recording", library.recording_info(events, images, snaps))
 
     def save(self, save_as=False):
         if not self.events:
@@ -465,6 +474,7 @@ class RecorderTab(QWidget):
             if not path:
                 return
         try:
+            self.main.keep_version(path)
             used_i = {e.get("img") for e in self.events}
             used_s = {e.get("snap") for e in self.events}
             storage.save_recording(path, self.events, dict(self._read_options(), recorded_in=self.recorded_in),

@@ -401,6 +401,8 @@ class LibraryDialog(dialogs.GlassDialog):
         if e.get("kind") == "script" and not e.get("missing") and not self.lock:
             m.addAction("Run now", lambda: (self.main.run_script_hotkey(e["path"], from_menu=True), self.reject()))
         m.addAction("Remove star" if e.get("favorite") else "Add to favorites", lambda: self.toggle_star(e))
+        if not self.lock:
+            m.addAction("Earlier versions...", lambda: (self.reject(), self.main.show_versions(e["path"], e["kind"])))
         m.addAction("Show in folder", lambda: runlog.open_folder(os.path.dirname(e["path"])))
         m.addSeparator()
         m.addAction("Remove from Library", lambda: self._forget(e))
@@ -507,3 +509,52 @@ class LibraryHome(QWidget):
             self.row.addWidget(card)
         self.row.addStretch(1)
         return bool(entries)
+
+
+def version_detail(copy, kind):
+    """'12 steps, 1 picture' for a kept copy (or '' if it can't be read)."""
+    try:
+        if kind == "recording":
+            events, _o, images, snaps = storage.load_recording_full(copy)
+            return library.recording_info(events, images, snaps)[1]
+        if kind == "chain":
+            from .. import chains
+            return library.chain_info(chains.load(copy))[1]
+        script, assets = storage.load_script(copy)
+        return library.script_info(script, assets)[1]
+    except Exception:
+        return ""
+
+
+class VersionsDialog(dialogs.GlassDialog):
+    """Earlier copies of one file, newest first. After exec: .chosen is the version to go back to, or None."""
+
+    def __init__(self, main, path, kind):
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+        from .. import versions
+        super().__init__(main, f"Earlier versions of {os.path.splitext(os.path.basename(path))[0]}")
+        self.chosen = None
+        self.items = versions.list_versions(path)
+        lab = QLabel("Each save keeps the copy it replaced (the last 10). Opening one doesn't change the file "
+                     "until you save it." if self.items else
+                     "No earlier versions yet: they're kept from now on, each time you save.")
+        lab.setProperty("role", "detail")
+        lab.setWordWrap(True)
+        self.body.addWidget(lab)
+        self.list = QListWidget()
+        self.list.setMinimumSize(460, 260)
+        for v in self.items:
+            detail = version_detail(v["file"], kind)
+            it = QListWidgetItem(f"{versions.when_text(v['when'])}      {detail}")
+            self.list.addItem(it)
+        if self.items:
+            self.list.setCurrentRow(0)
+        self.list.itemDoubleClicked.connect(lambda _i: self.accept())
+        self.body.addWidget(self.list)
+        self.add_buttons("Open this version", "Close")
+
+    def accept(self):
+        row = self.list.currentRow()
+        if 0 <= row < len(self.items):
+            self.chosen = self.items[row]
+            super().accept()
