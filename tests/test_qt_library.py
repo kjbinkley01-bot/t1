@@ -123,3 +123,21 @@ def test_cards_show_run_stats_from_history(qapp, tmp_path, monkeypatch):
     card = d.cards[0]
     assert history.card_text(card.stats) == "2 runs · 50%" and "last run failed" in card.toolTip()
     card.grab()   # paints with the pill
+
+
+def test_check_my_scripts_window(qapp, tmp_path):
+    from clicker.qt.library_dialog import DoctorDialog
+    from helpers import S, script
+    from clicker import storage as st
+    lib = library.Library(str(tmp_path / "data"))
+    p = str(tmp_path / "bad.clk")
+    st.save_script(p, script(S("Go to Step", goto="nowhere"), name="Bad"), st.AssetStore())
+    lib.touch_file(p)
+    main = Main(lib)
+    main.settings = {}
+    main._save_library = lambda: None
+    d = DoctorDialog(main)
+    assert d.tree.topLevelItemCount() == 1 and "nowhere" in d.tree.topLevelItem(0).text(2)
+    d.tree.setCurrentItem(d.tree.topLevelItem(0))
+    d._forget()
+    assert lib.list() == [] and d.tree.topLevelItemCount() == 0 and "nothing to check" in d.lbl.text()

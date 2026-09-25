@@ -9,8 +9,8 @@ import os
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
+                               QMessageBox, QScrollArea, QVBoxLayout, QWidget)
 
 from .. import history, library, runlog, storage
 from . import dialogs, glass
@@ -312,6 +312,11 @@ class LibraryDialog(dialogs.GlassDialog):
                         tip="Add every script and recording in a folder")
         b.clicked.connect(self.add_folder)
         top.addWidget(b)
+        if not pick:
+            b = GlassButton("Check", icon="check", small=True, tip="Check my scripts: find anything that would "
+                                                                 "stop them running")
+            b.clicked.connect(lambda: (self.reject(), self.main.check_scripts()))
+            top.addWidget(b)
         b = GlassButton("Browse files...", icon="file-plus", small=True, tip="Open a file that isn't in the Library")
         b.clicked.connect(self._browse)
         top.addWidget(b)
@@ -595,3 +600,71 @@ class VersionsDialog(dialogs.GlassDialog):
         if 0 <= row < len(self.items):
             self.chosen = self.items[row]
             super().accept()
+
+
+class DoctorDialog(dialogs.GlassDialog):
+    """Check my scripts: what would stop each file running, with a way to open or forget it."""
+
+    def __init__(self, main):
+        from PySide6.QtWidgets import QTreeWidget
+        super().__init__(main, "Check my scripts")
+        self.found = []
+        self.lbl = QLabel("")
+        self.lbl.setWordWrap(True)
+        self.body.addWidget(self.lbl)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["File", "Where", "What to fix"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setMinimumSize(820, 320)
+        self.tree.setColumnWidth(0, 200)
+        self.tree.setColumnWidth(1, 150)
+        self.tree.itemDoubleClicked.connect(lambda *_a: self._open())
+        self.body.addWidget(self.tree)
+        row = QHBoxLayout()
+        for text, fn, kind in (("Open", self._open, "glass"), ("Remove from Library", self._forget, "danger"),
+                               ("Check again", self.run, "glass")):
+            b = GlassButton(text, small=True, kind=kind)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        self.body.addLayout(row)
+        self.add_buttons("Close", None)
+        self.run()
+
+    def run(self):
+        from PySide6.QtWidgets import QTreeWidgetItem
+        from .. import doctor
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self.found, checked = doctor.check_all(self.main.library, self.main.settings)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.lbl.setText(doctor.summary(self.found, checked))
+        self.tree.clear()
+        for f in self.found:
+            it = QTreeWidgetItem([("● " if f["level"] == "error" else "○ ") + f["name"], f["where"], f["message"]])
+            it.setForeground(0, QColor(glass.RED) if f["level"] == "error" else QColor("#ffd166"))
+            it.setToolTip(0, f["path"])
+            it.setToolTip(2, f["message"])
+            self.tree.addTopLevelItem(it)
+        self.tree.setVisible(bool(self.found))
+
+    def _current(self):
+        i = self.tree.indexOfTopLevelItem(self.tree.currentItem()) if self.tree.currentItem() else -1
+        return self.found[i] if 0 <= i < len(self.found) else None
+
+    def _open(self):
+        f = self._current()
+        if f is None or not os.path.isfile(f["path"]):
+            return
+        self.reject()
+        key = self.main.TAB_FOR.get(f["kind"] or "script", "actions")
+        self.main.show_tab(key)
+        self.main.tabs[key].open_from_library(f["path"])
+
+    def _forget(self):
+        f = self._current()
+        if f is not None and f["path"] in self.main.library.entries:
+            self.main.library.forget(f["path"])
+            self.main._save_library()
+            self.run()

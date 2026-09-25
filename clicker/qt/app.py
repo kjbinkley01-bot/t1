@@ -1091,6 +1091,10 @@ class GlassApp(QMainWindow):
         self._save_library()
         self.settings["library_ready"] = True
 
+    def check_scripts(self):
+        from .library_dialog import DoctorDialog
+        DoctorDialog(self).exec()
+
     def keep_version(self, path):
         """Keep the copy a save is about to replace (Earlier versions in the Library)."""
         try:

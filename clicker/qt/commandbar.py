@@ -47,6 +47,7 @@ def commands(main):
         "step through breakpoint")
     add("Clear breakpoints", "Action Script", on("actions", a.clear_breakpoints))
     add("Open run logs", "Action Script", a.open_logs, keywords="log folder screenshot failure")
+    add("Check my scripts", "File", main.check_scripts, keywords="doctor health problems missing broken validate")
     for key, tab, kind in (("actions", a, "script"), ("recorder", r, "recording"),
                            ("chains", main.chains_tab, "chain")):
         if tab.path and main.current_tab == key:
