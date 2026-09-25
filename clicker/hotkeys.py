@@ -33,9 +33,10 @@ def combo_label(mods, key):
 
 
 class HotkeyManager:
-    def __init__(self, emit, bindings):
+    def __init__(self, emit, bindings, script_bindings=None):
         self.emit = emit
         self.bindings = dict(bindings)
+        self.script_bindings = dict(script_bindings or {})  # script path -> combo, emits ("script_hotkey", path)
         self.mods = set()
         self.down = set()
         self.capturing = False
@@ -58,7 +59,7 @@ class HotkeyManager:
 
     def is_hotkey(self, key):
         label = key_label(key).lower()
-        for b in self.bindings.values():
+        for b in list(self.bindings.values()) + list(self.script_bindings.values()):
             if b and b.split("+")[-1].lower() == label:
                 return True
         return False
@@ -84,6 +85,9 @@ class HotkeyManager:
         for action, b in self.bindings.items():
             if b and b.lower() == label.lower():
                 self.emit("hotkey", action)
+        for path, b in list(self.script_bindings.items()):
+            if b and b.lower() == label.lower():
+                self.emit("script_hotkey", path)
 
     def _on_release(self, key, injected=False):
         if injected:

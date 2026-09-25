@@ -113,3 +113,12 @@ def test_running_step_shows_its_countdown(qapp):
     assert text(1) == "≤9s"
     tab.progress = None
     assert text(1) == "100"
+
+
+def test_script_hotkey_entries_and_bindings(qapp):
+    from clicker.qt import scripthotkeys
+    s = {"script_hotkeys": [{"path": "/a.clk", "keys": "Ctrl+Alt+1"}, {"path": "/b.clk", "keys": ""},
+                            {"keys": "F9"}, "junk"]}
+    assert [e["path"] for e in scripthotkeys.entries(s)] == ["/a.clk", "/b.clk"]
+    assert scripthotkeys.entries(s)[0]["toggle"] is True
+    assert scripthotkeys.bindings(s) == {"/a.clk": "Ctrl+Alt+1"}

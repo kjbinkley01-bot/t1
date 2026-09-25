@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, Q
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import alerts, model, storage, updates, vision
+from . import scripthotkeys
 from ..core import CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
 from ..triggers import TriggerEngine
@@ -294,7 +295,10 @@ class GlassApp(QMainWindow):
         self.triggers = TriggerEngine(self.get_rules, self.trigger_assets, self.emitter("trigger"), Ctx(self),
                                       get_target=lambda: self.settings.get("triggers_target"))
         self.hotkeys = HotkeyManager(lambda kind, payload: self.post("hotkey", kind, payload),
-                                     self.settings["hotkeys"])
+                                     self.settings["hotkeys"], scripthotkeys.bindings(self.settings))
+        self.script_hotkey_dialog = None
+        self.tray = scripthotkeys.Tray(self)
+        self._quitting = False
 
         self.setWindowTitle(model.APP_NAME)
         icon_path = os.path.join(glass.ASSETS, "clicker.png")
@@ -304,6 +308,7 @@ class GlassApp(QMainWindow):
         self._fit()
 
         self.hotkeys.start()
+        self.update_tray()
         self.sampler = CursorSampler(self.post)
         self.sampler.start()
         self._poll_timer = QTimer(self)
@@ -671,10 +676,14 @@ class GlassApp(QMainWindow):
         if source == "hotkey":
             if kind == "hotkey_captured":
                 action, self.capture_action = self.capture_action, None
-                if action:
+                if isinstance(action, tuple):
+                    self.set_script_hotkey(action[1], payload)
+                elif action:
                     self.set_hotkey(action, payload)
             elif kind == "hotkey":
                 self._on_hotkey(payload)
+            elif kind == "script_hotkey":
+                self.run_script_hotkey(payload)
             return
         if source == "app":
             if kind == "cursor":
@@ -820,6 +829,110 @@ class GlassApp(QMainWindow):
         self.save_settings()
         self.refresh_hotkey_displays()
 
+    # ------------------------------------------------------------ script hotkeys and tray
+
+    def open_script_hotkeys(self):
+        if self.script_hotkey_dialog is not None:
+            self.script_hotkey_dialog.raise_()
+            return
+        scripthotkeys.ScriptHotkeysDialog(self).exec()
+
+    def begin_assign_script(self, path):
+        self.capture_action = ("script", path)
+        self.hotkeys.capture_next()
+
+    def cancel_script_assign(self):
+        if isinstance(self.capture_action, tuple):
+            self.capture_action = None
+            self.hotkeys.cancel_capture()
+
+    def apply_script_hotkeys(self):
+        self.hotkeys.script_bindings = scripthotkeys.bindings(self.settings)
+        self.save_settings()
+        self.update_tray()
+
+    def set_script_hotkey(self, path, combo):
+        dlg = self.script_hotkey_dialog
+        if combo:
+            for action, val in self.settings["hotkeys"].items():
+                if val and val.lower() == combo.lower():
+                    msg = f"{combo} is already '{self.HOTKEY_NAMES.get(action, action)}'. Pick other keys."
+                    if dlg is not None:
+                        dlg.msg.setText(msg)
+                        dlg.refresh(select=path)
+                    self.set_status(msg, error=True)
+                    return
+            if "+" not in combo and not combo.upper().startswith("F"):
+                msg = f"{combo} alone would fire while you type. Add Ctrl or Alt, or use an F key."
+                if dlg is not None:
+                    dlg.msg.setText(msg)
+                    dlg.refresh(select=path)
+                return
+        moved = None
+        for e in self.settings.setdefault("script_hotkeys", []):
+            if e.get("path") == path:
+                e["keys"] = combo
+            elif combo and (e.get("keys") or "").lower() == combo.lower():
+                e["keys"] = ""
+                moved = scripthotkeys.script_name(e["path"])
+        self.apply_script_hotkeys()
+        name = scripthotkeys.script_name(path)
+        text = (f"{combo} now starts {name}" + (f" (taken from {moved})" if moved else "") + "."
+                if combo else f"{name} has no hotkey now.")
+        self.set_status(text)
+        if dlg is not None:
+            dlg.msg.setText(text)
+            dlg.refresh(select=path)
+
+    def run_script_hotkey(self, path, from_menu=False):
+        entry = next((e for e in scripthotkeys.entries(self.settings) if e["path"] == path), None)
+        name = scripthotkeys.script_name(path)
+        if self.job_running():
+            if getattr(self.job, "path", None) == path and (from_menu or not entry or entry.get("toggle", True)):
+                self.stop_job()
+                self.set_status(f"Stopped {name}")
+                self.tray.message("Clicker", f"Stopped {name}")
+            else:
+                self.set_status("Something is already running. Stop it first.", error=True)
+                self.tray.message("Clicker", f"Can't start {name}: something is already running.")
+            return
+        if not os.path.exists(path):
+            self.set_status(f"{name}: the file is gone ({path})", error=True)
+            return
+        if entry and entry.get("ask") and not from_menu:
+            if QMessageBox.question(self, "Start script?", f"Start {name}?") != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            script, assets = storage.load_script(path)
+        except Exception as e:
+            self.set_status(f"Could not open {name}: {e}", error=True)
+            return
+        values = {i["name"]: self.last_inputs.get(i["name"], i.get("default", "")) for i in script.get("inputs") or []}
+        from ..runner import Runner
+        st = script.get("settings") or {}
+        job = Runner(script, assets, self.emitter("script"), inputs_map=values, speed=st.get("speed", 1.0),
+                     repeat=st.get("repeat", 1), random_delay_ms=st.get("random_delay_ms", 0), label=name,
+                     save_log=self.settings.get("save_run_logs", True), path=path)
+        if self.start_job(job, None):
+            self.set_status(f"Started {name}")
+            self.tray.message("Clicker", f"Started {name}")
+
+    def update_tray(self):
+        if self.settings.get("tray_on_close") or scripthotkeys.bindings(self.settings):
+            self.tray.ensure()
+        else:
+            self.tray.hide()
+
+    def show_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_from_tray(self):
+        self._quitting = True
+        self.show_from_tray()
+        self.close()
+
     def refresh_hotkey_displays(self):
         for action, fields in self.hotkey_displays.items():
             val = self.settings["hotkeys"].get(action) or "None"
@@ -956,9 +1069,22 @@ class GlassApp(QMainWindow):
         self._clear_autosave()
 
     def closeEvent(self, e):
-        if not getattr(self, "_restart", False) and not self.action_tab.confirm_discard("closing"):
+        restart = getattr(self, "_restart", False)
+        if (not restart and not self._quitting and self.settings.get("tray_on_close")
+                and self.tray.ensure()):
+            e.ignore()
+            self.hide()
+            if not self.settings.get("tray_told"):
+                self.settings["tray_told"] = True
+                self.save_settings()
+                self.tray.message("Clicker is still running",
+                                  "Script hotkeys keep working. Right-click the tray icon to quit.")
+            return
+        if not restart and not self.action_tab.confirm_discard("closing"):
+            self._quitting = False
             e.ignore()
             return
+        self.tray.hide()
         self._closed = True
         self._poll_timer.stop()
         self._autosave_timer.stop()
