@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter,
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import alerts, clipboard, library, model, storage, updates, versions, vision
+from .. import alerts, chains, clipboard, library, model, storage, updates, versions, vision
 from . import motion, scripthotkeys
 from ..core import PROGRESS_ONLY, CursorSampler, Ctx, coalesce
 from ..hotkeys import HotkeyManager
@@ -896,16 +896,10 @@ class GlassApp(QMainWindow):
             self.triggers_tab.add_log("Run script", "Skipped: a job is already running", False)
             return
         try:
-            script, assets = storage.load_script(path)
+            job = self.job_for_file(path, values=dict(self.last_inputs))
         except Exception as e:
             self.triggers_tab.add_log("Run script", f"Could not open {path}: {e}", False)
             return
-        from ..runner import Runner
-        st = script.get("settings") or {}
-        job = Runner(script, assets, self.emitter("script"), inputs_map=dict(self.last_inputs),
-                     speed=st.get("speed", 1.0), repeat=st.get("repeat", 1),
-                     random_delay_ms=st.get("random_delay_ms", 0), label=path,
-                     save_log=self.settings.get("save_run_logs", True), path=path)
         self.start_job(job, self.import_tab)
 
     # ------------------------------------------------------------ hotkeys
@@ -1124,6 +1118,32 @@ class GlassApp(QMainWindow):
         except OSError:
             pass
 
+    def job_for_file(self, path, name=None, values=None):
+        """A ready to start job for a script or chain file (inputs filled from the last values used)."""
+        from ..runner import Runner
+
+        def remembered(script):
+            return {i["name"]: self.last_inputs.get(i["name"], i.get("default", ""))
+                    for i in script.get("inputs") or []}
+        save_log = self.settings.get("save_run_logs", True)
+        if path.lower().endswith(chains.EXT):
+            chain = chains.load(path)
+            bad = chains.problems(chain)
+            if bad:
+                raise ValueError(bad[0])
+            vals = {}
+            for link in chain["links"]:
+                vals.update(remembered(storage.load_script(link["path"])[0]))
+            vals.update(values or {})
+            return chains.ChainJob(chain, self.emitter("script"), path=path, inputs_map=vals, save_log=save_log)
+        script, assets = storage.load_script(path)
+        st = script.get("settings") or {}
+        vals = remembered(script)
+        vals.update(values or {})
+        return Runner(script, assets, self.emitter("script"), inputs_map=vals, speed=st.get("speed", 1.0),
+                      repeat=st.get("repeat", 1), random_delay_ms=st.get("random_delay_ms", 0),
+                      label=name or scripthotkeys.script_name(path), save_log=save_log, path=path)
+
     def run_script_hotkey(self, path, from_menu=False):
         entry = next((e for e in scripthotkeys.entries(self.settings) if e["path"] == path), None)
         name = scripthotkeys.script_name(path)
@@ -1144,16 +1164,10 @@ class GlassApp(QMainWindow):
             if QMessageBox.question(self, "Start script?", f"Start {name}?") != QMessageBox.StandardButton.Yes:
                 return
         try:
-            script, assets = storage.load_script(path)
+            job = self.job_for_file(path, name)
         except Exception as e:
             self.set_status(f"Could not open {name}: {e}", error=True)
             return
-        values = {i["name"]: self.last_inputs.get(i["name"], i.get("default", "")) for i in script.get("inputs") or []}
-        from ..runner import Runner
-        st = script.get("settings") or {}
-        job = Runner(script, assets, self.emitter("script"), inputs_map=values, speed=st.get("speed", 1.0),
-                     repeat=st.get("repeat", 1), random_delay_ms=st.get("random_delay_ms", 0), label=name,
-                     save_log=self.settings.get("save_run_logs", True), path=path)
         if not (self.job_running() or self.recording_active()):
             if self.start_job(job, None):
                 self.set_status(f"Started {name}")

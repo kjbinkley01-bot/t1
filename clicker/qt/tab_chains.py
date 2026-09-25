@@ -255,11 +255,13 @@ class ChainCanvas(QWidget):
         # number, state
         nb = QRectF(tr.x() + 8, tr.y() + 8, 24, 24)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush({"done": QColor(glass.GREEN), "failed": QColor(glass.RED)}.get(state, QColor(0, 0, 0, 150)))
+        p.setBrush({"done": QColor(glass.GREEN), "failed": QColor(glass.RED),
+                    "skipped": QColor(120, 120, 140)}.get(state, QColor(0, 0, 0, 150)))
         p.drawEllipse(nb)
         p.setPen(QColor("#ffffff"))
         p.setFont(font(9, QFont.Weight.Bold))
-        p.drawText(nb, Qt.AlignmentFlag.AlignCenter, {"done": "✓", "failed": "!"}.get(state, str(k + 1)))
+        mark = {"done": "✓", "failed": "!", "skipped": "–"}.get(state, str(k + 1))
+        p.drawText(nb, Qt.AlignmentFlag.AlignCenter, mark)
         if hover and not self.tab.running():
             rr = self._remove_rect(k)
             p.setBrush(QColor(0, 0, 0, 150))
@@ -397,6 +399,14 @@ class ChainsTab(QWidget):
         g.addWidget(self.e_retries, 0, 8)
         self.lbl_retries = QLabel("more tries")
         g.addWidget(self.lbl_retries, 0, 9)
+        g.addWidget(QLabel("Only if"), 1, 2)
+        self.e_only = QLineEdit()
+        self.e_only.setPlaceholderText("always; or a check like {gold} < 500 or contains({status}, 'ready')")
+        self.e_only.textEdited.connect(self._card_changed)
+        g.addWidget(self.e_only, 1, 3, 1, 7)
+        self.lbl_only = QLabel("")
+        self.lbl_only.setProperty("role", "detail")
+        g.addWidget(self.lbl_only, 1, 10, 1, 3)
         g.setColumnStretch(10, 1)
         b = GlassButton("Edit script", icon="list-bullets", small=True, tip="Open this script in Action Script")
         b.clicked.connect(self.edit_script)
@@ -489,6 +499,9 @@ class ChainsTab(QWidget):
         self.e_pause.setText(f"{link['pause_s']:g}")
         self.cb_fail.setCurrentIndex(max(0, self.cb_fail.findData(link["on_fail"])))
         self.e_retries.setText(str(link["retries"]))
+        if not self.e_only.hasFocus():
+            self.e_only.setText(link.get("only_if", ""))
+        self._check_only(link)
         retry = link["on_fail"] == "retry"
         self.e_retries.setVisible(retry)
         self.lbl_retries.setVisible(retry)
@@ -509,10 +522,22 @@ class ChainsTab(QWidget):
             if val is not None:
                 link[key] = val
         link["on_fail"] = self.cb_fail.currentData()
+        link["only_if"] = self.e_only.text().strip()
+        self._check_only(link)
         retry = link["on_fail"] == "retry"
         self.e_retries.setVisible(retry)
         self.lbl_retries.setVisible(retry)
         self.changed()
+
+    def _check_only(self, link):
+        from .. import expr
+        msg = ""
+        if link.get("only_if"):
+            try:
+                expr.parse(link["only_if"])
+            except expr.ExprError as e:
+                msg = str(e)
+        self.lbl_only.setText(msg)
 
     def _name_changed(self, text):
         self.chain["name"] = text.strip() or "Untitled chain"
@@ -661,7 +686,10 @@ class ChainsTab(QWidget):
 
     def on_job(self, kind, payload):
         st = self.canvas.state
-        if kind == "chain":
+        if kind == "chain" and payload.get("skipped"):
+            st[payload["link"]] = "skipped"
+            self.canvas.update()
+        elif kind == "chain":
             i = payload["link"]
             for k in list(st):
                 if st[k] == "running" and k != i:

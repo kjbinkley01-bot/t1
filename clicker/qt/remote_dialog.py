@@ -99,7 +99,8 @@ class RemoteDialog(dialogs.GlassDialog):
 
     def _add(self):
         from .library_dialog import pick_script
-        path = pick_script(self.main, "Choose a script your phone may start", parent=self)
+        path = pick_script(self.main, "Choose a script or chain your phone may start", parent=self,
+                           chains=True)
         if path and os.path.abspath(path) not in self._paths():
             self._add_item(os.path.abspath(path))
 

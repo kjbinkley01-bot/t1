@@ -250,11 +250,11 @@ class LibraryDialog(dialogs.GlassDialog):
     and the button says Choose.
     """
 
-    def __init__(self, main, kind=None, pick=False, title="Library", parent=None):
+    def __init__(self, main, kind=None, pick=False, title="Library", parent=None, kinds=None):
         super().__init__(main, title, parent)
         self.lib = main.library
         self.chosen, self.browse = None, False
-        self.lock = kind if pick else None
+        self.lock = (tuple(kinds) if kinds else (kind,)) if pick else None  # what may be picked
         self.filter = kind if kind in KINDS and not pick else "all"
         self.browse_kind = kind or "script"
         self.cards, self.sel = [], None
@@ -277,7 +277,7 @@ class LibraryDialog(dialogs.GlassDialog):
             top.addWidget(b)
         top.addSpacing(10)
         if pick:
-            self.search.setPlaceholderText(f"Search {kind}s")
+            self.search.setPlaceholderText("Search " + " and ".join(f"{k}s" for k in self.lock))
         b = GlassButton("Add folder...", icon="folder-open", small=True,
                         tip="Add every script and recording in a folder")
         b.clicked.connect(self.add_folder)
@@ -314,8 +314,10 @@ class LibraryDialog(dialogs.GlassDialog):
 
     def refresh(self):
         q = self.search.text()
-        kind = self.lock or (self.filter if self.filter in KINDS else None)
+        kind = self.filter if (self.filter in KINDS and not self.lock) else None
         entries = self.lib.list(q, kind=kind, favorites=self.filter == "favorites")
+        if self.lock:
+            entries = [e for e in entries if e.get("kind") in self.lock]
         while self.grid.count():
             it = self.grid.takeAt(0)
             w = it.widget()
@@ -398,7 +400,7 @@ class LibraryDialog(dialogs.GlassDialog):
     def card_menu(self, e, pos):
         m = QMenu(self)
         m.addAction("Open", lambda: self.open_entry(e))
-        if e.get("kind") == "script" and not e.get("missing") and not self.lock:
+        if e.get("kind") in ("script", "chain") and not e.get("missing") and not self.lock:
             m.addAction("Run now", lambda: (self.main.run_script_hotkey(e["path"], from_menu=True), self.reject()))
         m.addAction("Remove star" if e.get("favorite") else "Add to favorites", lambda: self.toggle_star(e))
         if not self.lock:
@@ -443,14 +445,17 @@ class LibraryDialog(dialogs.GlassDialog):
         return QSize(4 * CARD_W + 120, 2 * CARD_H + 260)
 
 
-def pick_script(main, title="Choose a script", parent=None):
-    """Choose a script from the Library (Browse files... falls back to a file dialog). Returns a path or None."""
-    d = LibraryDialog(main, "script", pick=True, title=title, parent=parent)
+def pick_script(main, title="Choose a script", parent=None, chains=False):
+    """Choose a script (or, with chains=True, a script or chain) from the Library; Browse files... falls
+    back to a file dialog. Returns a path or None."""
+    kinds = ("script", "chain") if chains else ("script",)
+    d = LibraryDialog(main, "script", pick=True, title=title, parent=parent, kinds=kinds)
     d.exec()
     if d.chosen is not None:
         return d.chosen["path"]
     if d.browse:
-        path, _ = QFileDialog.getOpenFileName(parent or main, title, "", storage.SCRIPT_FILTER)
+        filt = storage.SCRIPT_FILTER.replace(")", " *.clkchain)") if chains else storage.SCRIPT_FILTER
+        path, _ = QFileDialog.getOpenFileName(parent or main, title, "", filt)
         return path or None
     return None
 

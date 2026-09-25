@@ -140,7 +140,7 @@ class RunsPanel(QFrame):
     def _pick(self):
         self.hide()
         from .library_dialog import pick_script
-        path = pick_script(self.main, "Run a script alongside")
+        path = pick_script(self.main, "Run a script or chain alongside", chains=True)
         if path:
             self.main.run_script_hotkey(path, from_menu=True)
 

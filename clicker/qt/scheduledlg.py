@@ -150,7 +150,7 @@ class ScheduleDialog(dialogs.GlassDialog):
 
     def _add(self):
         from .library_dialog import pick_script
-        path = pick_script(self.main, "Choose a script to schedule", parent=self)
+        path = pick_script(self.main, "Choose a script or chain to schedule", parent=self, chains=True)
         if not path:
             return
         e = sch.new_entry(os.path.abspath(path))

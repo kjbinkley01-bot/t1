@@ -95,3 +95,24 @@ def test_files_round_trip_and_problems(tmp_path):
     assert chains.problems(chains.new_chain())[0].startswith("Add at least one")
     with pytest.raises(ValueError):
         chains.normalize({"format": "something-else"})
+
+
+def test_only_if_runs_a_card_when_its_check_is_true(tmp_path, fake_inputs):
+    setg = save(tmp_path, "gold", S("Set Variable", var="gold", value="300"))
+    buy = save(tmp_path, "buy", S("Type Text", text="buy"))
+    farm = save(tmp_path, "farm", S("Type Text", text="farm"))
+    c = chains.new_chain()
+    c["links"] = [chains.new_link(setg), dict(chains.new_link(buy), only_if="{gold} >= 500"),
+                  dict(chains.new_link(farm), only_if="{gold} < 500")]
+    job, events = run_chain(c)
+    assert job.result[0]
+    assert [x for x in fake_inputs.calls if x[0] == "type"] == [("type", "farm")]
+    assert any(p.get("skipped") and p["link"] == 1 for k, p in events if k == "chain")
+    assert chains.describe_link(c["links"][1]).startswith("only if {gold} >= 500")
+
+
+def test_a_broken_only_if_is_caught_before_running(tmp_path):
+    a = save(tmp_path, "a", S("Left Click"))
+    c = chains.new_chain()
+    c["links"] = [dict(chains.new_link(a), only_if="{gold} <")]
+    assert "only if" in chains.problems(c)[0]

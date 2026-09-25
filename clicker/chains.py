@@ -6,6 +6,7 @@ runs its script exactly as it would run on its own (its window, speed, pictures 
     repeat    how many times to run that script in a row
     pause_s   seconds to wait before it starts
     on_fail   "stop" the chain, "skip" to the next link, or "retry" it (retries times) before stopping
+    only_if   an expression like {gold} < 500: the card runs only when it is true (blank = always)
 
 The chain itself can repeat (0 = until stopped). A chain file (.clkchain) only points at the scripts,
 so editing a script changes every chain that uses it.
@@ -15,7 +16,7 @@ import json
 import os
 import time
 
-from . import history, runner, storage
+from . import expr, history, runner, storage
 
 FORMAT = "clicker-chain"
 EXT = ".clkchain"
@@ -28,7 +29,8 @@ def new_chain(name="Untitled chain"):
 
 
 def new_link(path):
-    return {"path": os.path.abspath(path), "repeat": 1, "pause_s": 0.0, "on_fail": "stop", "retries": 1}
+    return {"path": os.path.abspath(path), "repeat": 1, "pause_s": 0.0, "on_fail": "stop", "retries": 1,
+            "only_if": ""}
 
 
 def normalize(data):
@@ -46,6 +48,7 @@ def normalize(data):
         link["pause_s"] = max(0.0, float(ln.get("pause_s", 0) or 0))
         link["on_fail"] = ln.get("on_fail") if ln.get("on_fail") in ON_FAIL_LABEL else "stop"
         link["retries"] = max(1, int(ln.get("retries", 1) or 1))
+        link["only_if"] = str(ln.get("only_if") or "").strip()
         c["links"].append(link)
     return c
 
@@ -67,7 +70,7 @@ def link_name(link):
 
 
 def describe_link(link):
-    bits = []
+    bits = [f"only if {link['only_if']}"] if link.get("only_if") else []
     if link.get("pause_s"):
         bits.append(f"wait {link['pause_s']:g} s")
     bits.append("once" if link.get("repeat", 1) == 1 else f"{link['repeat']} times")
@@ -85,6 +88,11 @@ def problems(chain):
     for i, ln in enumerate(chain["links"]):
         if not os.path.isfile(ln["path"]):
             out.append(f"Card {i + 1}: {ln['path']} is missing.")
+        if ln.get("only_if"):
+            try:
+                expr.parse(ln["only_if"])
+            except expr.ExprError as e:
+                out.append(f"Card {i + 1}, only if: {e}.")
     return out
 
 
@@ -205,6 +213,18 @@ class ChainJob(runner.Job):
 
     def _link(self, i, link):
         name = link_name(link)
+        if link.get("only_if"):
+            vals = runner.builtin_values()
+            vals["run"] = str(self.run_number)  # which time through the chain this is
+            vals.update(self.values)
+            try:
+                go = expr.evaluate(link["only_if"], vals)
+            except expr.ExprError as e:
+                raise runner.ScriptFailed(f"Card {i + 1} ({name}), only if: {e}")
+            if not go:
+                self.emit("log", f"Card {i + 1} ({name}) skipped: {link['only_if']} is not true")
+                self.emit("chain", {"link": i, "step": None, "skipped": True})
+                return
         for n in range(link["repeat"]):
             tries = 1 + (link["retries"] if link["on_fail"] == "retry" else 0)
             for attempt in range(tries):

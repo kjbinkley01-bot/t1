@@ -40,9 +40,14 @@ def _script_target(path, cache={}):
     if hit and hit[0] == mt:
         return hit[1]
     try:
-        script, _a = storage.load_script(path)
-        t = target.normalize((script.get("settings") or {}).get("target"))
-        text = target.describe(t) if t else "Whole screen"
+        if path.lower().endswith(".clkchain"):
+            from .. import chains
+            n = len(chains.load(path)["links"])
+            text = f"Chain of {n} script{'s' if n != 1 else ''}"
+        else:
+            script, _a = storage.load_script(path)
+            t = target.normalize((script.get("settings") or {}).get("target"))
+            text = target.describe(t) if t else "Whole screen"
     except Exception:
         text = "can't be opened"
     cache[path] = (mt, text)
@@ -180,7 +185,7 @@ class ScriptHotkeysDialog(dialogs.GlassDialog):
 
     def _add_file(self):
         from .library_dialog import pick_script
-        path = pick_script(self.main, "Choose a script for a hotkey", parent=self)
+        path = pick_script(self.main, "Choose a script or chain for a hotkey", parent=self, chains=True)
         if path:
             self.add_path(path)
 
