@@ -508,9 +508,27 @@ def _image_click(pending, btn, delay):
     return st
 
 
-def recording_to_steps(events, use_pictures=True):
+def smart_waits(steps):
+    """Picture clicks wait for their picture instead of the recorded pause: no fixed delay, and a
+    timeout of at least 10 s (or three times the pause, for slow screens)."""
+    for st in steps:
+        if st["action"] == "Click Image" and st.get("delay_ms", 0) > 0:
+            pause = st["delay_ms"] / 1000.0
+            st["timeout_s"] = max(10, int(pause * 3) + 5)
+            st["delay_ms"] = 0
+            st["comment"] = (st.get("comment", "") + "; waits for its picture").lstrip("; ")
+    return steps
+
+
+def recording_to_steps(events, use_pictures=True, wait_for_pictures=False):
     """Turn a recording into Action Script steps. Clicks that have a unique picture become Click Image
-    steps (they keep working when the window moves); the rest click their recorded position."""
+    steps (they keep working when the window moves); the rest click their recorded position.
+    wait_for_pictures: picture clicks wait for the picture instead of the recorded pause."""
+    steps = _convert(events, use_pictures)
+    return smart_waits(steps) if wait_for_pictures and use_pictures else steps
+
+
+def _convert(events, use_pictures):
     steps = []
     last_t = 0.0
     pending = None

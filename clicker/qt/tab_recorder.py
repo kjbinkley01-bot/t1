@@ -5,12 +5,13 @@ import time
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, \
+from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, \
     QVBoxLayout, QWidget
 
 from .. import model, storage, target, vision
 from ..recorder import Player, Recorder, recording_to_steps, to_window
 from ..storage import AssetStore
+from . import dialogs
 from .glass import GlassPanel, font
 from .rec_timeline import RecordingEditor
 from .runin import RunInButton
@@ -466,7 +467,23 @@ class RecorderTab(QWidget):
         if not self.events:
             self.main.set_status("Record something first.", error=True)
             return
-        steps = recording_to_steps(self.events, use_pictures=bool(self.images))
+        pics = sum(1 for e in self.events if e.get("img"))
+        use_pics, smart = bool(pics), bool(pics)
+        if pics:
+            d = dialogs.GlassDialog(self.main, "Convert to Action Script")
+            d.body.addWidget(detail(f"{pics} click{'s have' if pics != 1 else ' has'} a picture."))
+            sw_pics = GlassSwitch("Click by picture where there is one (works when windows move)")
+            sw_smart = GlassSwitch("Wait for each picture instead of the recorded pauses (faster, and fine "
+                                   "on slow PCs)")
+            for sw in (sw_pics, sw_smart):
+                sw.setChecked(True)
+                d.body.addWidget(sw)
+            sw_pics.toggled.connect(sw_smart.setEnabled)
+            d.add_buttons("Convert")
+            if d.exec() != QDialog.DialogCode.Accepted:
+                return
+            use_pics, smart = sw_pics.isChecked(), sw_smart.isChecked()
+        steps = recording_to_steps(self.events, use_pictures=use_pics, wait_for_pictures=smart)
         if not steps:
             self.main.set_status("The recording has no clicks or keys to convert.", error=True)
             return

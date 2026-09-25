@@ -108,3 +108,12 @@ def test_follow_clicks_where_the_picture_is_now(fake_inputs):
     assert p.result[0], p.result
     assert [m[2] for m in win.mouse("down")] == [(272, 163)]
     assert [m[2] for m in win.mouse("up")] == [(272, 163)]
+
+
+def test_smart_waits_replace_pauses_for_picture_clicks():
+    events = [ev(4.0, "mouse_down", x=220, y=112, button="left", img="a.png", img_off=[0, 0]),
+              ev(4.1, "mouse_up", x=220, y=112, button="left"),
+              ev(9.0, "mouse_down", x=50, y=450, button="left"), ev(9.1, "mouse_up", x=50, y=450, button="left")]
+    steps = recorder.recording_to_steps(events, wait_for_pictures=True)
+    assert steps[0]["action"] == "Click Image" and steps[0]["delay_ms"] == 0 and steps[0]["timeout_s"] == 17
+    assert steps[1]["action"] == "Left Click" and steps[1]["delay_ms"] == 4900
