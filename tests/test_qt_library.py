@@ -109,3 +109,17 @@ def test_versions_dialog_lists_kept_copies(qapp, tmp_path, monkeypatch):
     d.list.setCurrentRow(1)
     d.accept()
     assert d.chosen["file"] == versions.list_versions(p)[1]["file"]
+
+
+def test_cards_show_run_stats_from_history(qapp, tmp_path, monkeypatch):
+    from clicker import history
+    from clicker.qt import library_dialog
+    lib = library.Library(str(tmp_path / "data"))
+    a = make_script(tmp_path / "a.clk", "Alpha")
+    lib.touch_file(a)
+    monkeypatch.setattr(history, "load", lambda path=None: [{"path": a, "result": "finished", "ts": 1},
+                                                            {"path": a, "result": "failed", "ts": 2}])
+    d = library_dialog.LibraryDialog(Main(lib), "script")
+    card = d.cards[0]
+    assert history.card_text(card.stats) == "2 runs · 50%" and "last run failed" in card.toolTip()
+    card.grab()   # paints with the pill

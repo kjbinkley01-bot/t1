@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPainter
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
                                QScrollArea, QVBoxLayout, QWidget)
 
-from .. import library, runlog, storage
+from .. import history, library, runlog, storage
 from . import dialogs, glass
 from .flowchart import group_color
 from .glass import font, icon_pixmap
@@ -25,6 +25,14 @@ FILTERS = [("all", "All"), ("script", "Scripts"), ("recording", "Recordings"), (
 KINDS = ("script", "recording", "chain")
 BADGE = {"script": "Script", "recording": "Recording", "chain": "Chain"}
 _pixmaps = {}
+
+
+def run_stats():
+    """History's runs per file (an empty dict if it can't be read)."""
+    try:
+        return history.by_path(history.load())
+    except Exception:
+        return {}
 
 
 def thumb_pixmap(path):
@@ -62,9 +70,9 @@ class LibraryCard(QWidget):
     starred = Signal(dict)
     menu = Signal(dict, object)
 
-    def __init__(self, lib, entry, compact=False):
+    def __init__(self, lib, entry, compact=False, stats=None):
         super().__init__()
-        self.lib, self.entry = lib, entry
+        self.lib, self.entry, self.stats = lib, entry, stats  # stats: this file's runs from History
         self.w, self.h, self.thumb_h = (196, 150, 84) if compact else (CARD_W, CARD_H, THUMB_H)
         self.setFixedSize(self.w, self.h)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -72,6 +80,8 @@ class LibraryCard(QWidget):
         self.selected = False
         self._hover = 0.0
         tip = entry["path"] + ("\n(file not found)" if entry.get("missing") else "")
+        if stats and stats.get("last") == "failed":
+            tip += "\nThe last run failed: History has the details."
         self.setToolTip(tip)
 
     def _star_rect(self):
@@ -134,6 +144,7 @@ class LibraryCard(QWidget):
         else:
             self._paint_steps(p, tr, e)
         p.restore()
+        self._paint_stats(p, tr)
         # kind badge and star
         badge = BADGE.get(e.get("kind"), "Script")
         p.setFont(font(7.5, QFont.Weight.DemiBold))
@@ -198,6 +209,25 @@ class LibraryCard(QWidget):
             p.setPen(QColor(20, 20, 40, 220))
             p.setFont(font(6.5, QFont.Weight.DemiBold))
             p.drawText(box.adjusted(6, 0, -4, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, a)
+
+    def _paint_stats(self, p, tr):
+        """'12 runs · 92%' in the top left of the picture; a red dot when the last run failed."""
+        text = history.card_text(self.stats)
+        if not text:
+            return
+        failed = self.stats.get("last") == "failed"
+        p.setFont(font(7.5, QFont.Weight.DemiBold))
+        w = QFontMetrics(p.font()).horizontalAdvance(text) + (26 if failed else 14)
+        r = QRectF(tr.x() + 8, tr.y() + 8, w, 18)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 130))
+        p.drawRoundedRect(r, 9, 9)
+        if failed:
+            p.setBrush(QColor(glass.RED))
+            p.drawEllipse(QPointF(r.x() + 10, r.center().y()), 3.5, 3.5)
+        p.setPen(QColor(255, 255, 255, 230))
+        p.drawText(r.adjusted(18 if failed else 7, 0, -6, 0),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
 
     def _paint_chain(self, p, r, e):
         """A chain: its scripts as little linked cards."""
@@ -316,6 +346,7 @@ class LibraryDialog(dialogs.GlassDialog):
         q = self.search.text()
         kind = self.filter if (self.filter in KINDS and not self.lock) else None
         entries = self.lib.list(q, kind=kind, favorites=self.filter == "favorites")
+        self.stats = run_stats()
         if self.lock:
             entries = [e for e in entries if e.get("kind") in self.lock]
         while self.grid.count():
@@ -356,7 +387,7 @@ class LibraryDialog(dialogs.GlassDialog):
         g.setContentsMargins(0, 0, 0, 0)
         g.setSpacing(8)
         for i, e in enumerate(entries):
-            card = LibraryCard(self.lib, e)
+            card = LibraryCard(self.lib, e, stats=self.stats.get(os.path.normcase(e["path"])))
             card.clicked.connect(self.select_card)
             card.opened.connect(self.open_entry)
             card.starred.connect(self.toggle_star)
@@ -507,8 +538,9 @@ class LibraryHome(QWidget):
             if it.widget() is not None:
                 it.widget().hide()
                 it.widget().deleteLater()
+        stats = run_stats()
         for e in entries[:12]:
-            card = LibraryCard(lib, e, compact=True)
+            card = LibraryCard(lib, e, compact=True, stats=stats.get(os.path.normcase(e["path"])))
             card.clicked.connect(lambda c: self.opened.emit(c.entry))
             card.opened.connect(self.opened.emit)
             self.row.addWidget(card)

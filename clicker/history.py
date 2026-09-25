@@ -102,6 +102,33 @@ def scripts(entries):
     return seen
 
 
+def by_path(entries):
+    """{file path: {"runs", "ok", "last", "last_ts"}} for real (not dry) runs, for the Library's cards.
+    Stopped runs count as runs but not as failures."""
+    out = {}
+    for e in entries:
+        p = e.get("path")
+        if not p or e.get("dry_run"):
+            continue
+        s = out.setdefault(os.path.normcase(os.path.abspath(p)), {"runs": 0, "ok": 0, "failed": 0, "last": None,
+                                                                   "last_ts": 0})
+        s["runs"] += 1
+        s["ok"] += e.get("result") == "finished"
+        s["failed"] += e.get("result") == "failed"
+        if e.get("ts", 0) >= s["last_ts"]:
+            s["last"], s["last_ts"] = e.get("result"), e.get("ts", 0)
+    return out
+
+
+def card_text(s):
+    """'12 runs · 92%' (success among runs that finished or failed), or None."""
+    if not s or not s["runs"]:
+        return None
+    done = s["ok"] + s["failed"]
+    rate = f" · {round(100 * s['ok'] / done)}%" if done else ""
+    return f"{s['runs']} run{'s' if s['runs'] != 1 else ''}{rate}"
+
+
 def fmt_duration(seconds):
     if seconds is None:
         return "-"

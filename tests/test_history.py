@@ -71,3 +71,18 @@ def test_file_is_trimmed_when_large(tmp_path, monkeypatch):
     history.record({"ts": 1, "result": "finished"}, p)
     with open(p, encoding="utf-8") as f:
         assert len(f.readlines()) == 10
+
+
+def test_by_path_for_library_cards(tmp_path):
+    import os
+    from clicker import history
+    a, b = str(tmp_path / "a.clk"), str(tmp_path / "b.clk")
+    entries = [{"path": a, "result": "finished", "ts": 1}, {"path": a, "result": "failed", "ts": 3},
+               {"path": a, "result": "stopped", "ts": 2}, {"path": a, "result": "finished", "ts": 4, "dry_run": True},
+               {"path": b, "result": "finished", "ts": 5}, {"script": "no path", "result": "finished"}]
+    s = history.by_path(entries)
+    sa = s[os.path.normcase(a)]
+    assert (sa["runs"], sa["ok"], sa["failed"], sa["last"]) == (3, 1, 1, "failed")
+    assert history.card_text(sa) == "3 runs · 50%"
+    assert history.card_text(s[os.path.normcase(b)]) == "1 run · 100%"
+    assert history.card_text(None) is None
