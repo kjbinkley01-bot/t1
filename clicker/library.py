@@ -18,6 +18,7 @@ from . import model, storage, vision
 
 SCRIPT_EXTS = (".clk", ".clkpkg", ".json")
 RECORDING_EXTS = (".clkrec",)
+CHAIN_EXTS = (".clkchain",)
 MAX_RECENT = 60          # entries that aren't favorites are forgotten beyond this
 THUMB_W, THUMB_H = 320, 180
 
@@ -26,6 +27,8 @@ def kind_of(path):
     p = path.lower()
     if p.endswith(RECORDING_EXTS):
         return "recording"
+    if p.endswith(CHAIN_EXTS):
+        return "chain"
     if p.endswith(SCRIPT_EXTS):
         return "script"
     return None
@@ -95,6 +98,16 @@ def recording_info(events, images=None, snaps=None):
     clicks = [round(e["t"] / length, 3) for e in events if e.get("type") == "mouse_down"][:60] if length else []
     keys = [round(e["t"] / length, 3) for e in events if e.get("type") == "key_down"][:60] if length else []
     return "", detail, _thumb_image(img), {"clicks": clicks, "keys": keys}
+
+
+def chain_info(chain):
+    """(name, detail, thumbnail, extra) for a chain: its cards' names make its picture."""
+    names = [os.path.splitext(os.path.basename(ln["path"]))[0] for ln in chain.get("links", [])]
+    n = len(names)
+    detail = f"{n} script{'s' if n != 1 else ''}" + ("" if chain.get("repeat", 1) == 1 else
+                                                      ", repeats" if chain.get("repeat") == 0
+                                                      else f", {chain['repeat']} times")
+    return chain.get("name") or "", detail, None, {"links": names[:8]}
 
 
 class Library:
@@ -169,6 +182,9 @@ class Library:
             if kind == "recording":
                 events, _o, images, snaps = storage.load_recording_full(path)
                 return self.touch(path, kind, recording_info(events, images, snaps), used)
+            if kind == "chain":
+                from . import chains
+                return self.touch(path, kind, chain_info(chains.load(path)), used)
         except Exception:
             return None
         return None
@@ -230,7 +246,7 @@ class Library:
             if favorites and not e.get("favorite"):
                 continue
             hay = f"{e.get('name', '')} {os.path.basename(e['path'])} {e.get('detail', '')} " \
-                  f"{' '.join(e.get('actions', []))}".lower()
+                  f"{' '.join(e.get('actions', []))} {' '.join(e.get('links', []))}".lower()
             if all(w in hay for w in words):
                 out.append(dict(e, missing=not os.path.isfile(e["path"])))
         out.sort(key=lambda e: (max(e.get("used", 0), e.get("added", 0)), e["path"]), reverse=True)

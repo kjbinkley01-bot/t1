@@ -55,6 +55,11 @@ def commands(main):
     add("Stop monitoring" if main.triggers.running else "Start monitoring", "Screen Triggers",
         main.toggle_monitoring, keywords="triggers rules watch")
     add("New trigger rule", "Screen Triggers", on("triggers", t.new_rule))
+    ch = main.chains_tab
+    add("Stop the chain" if main.job_running_for(ch) else "Start the chain", "Chains", on("chains", ch.toggle_run),
+        keywords="run sequence scripts in order")
+    add("New chain", "Chains", on("chains", ch.new_chain), keywords="sequence scripts in order")
+    add("Add a script to the chain", "Chains", on("chains", ch.add_link), keywords="card link")
     add("Pause or resume", "Running", main.toggle_pause, "F11")
     add("Stop everything", "Running", main.stop_all, "F8", "emergency halt")
     add("Settings", "Clicker", main.show_settings, keywords="preferences options hotkeys shortcut keys")
@@ -82,9 +87,9 @@ def commands(main):
         if e.get("missing"):
             continue
         kind = e["kind"]
-        tab_key, tab = ("recorder", r) if kind == "recording" else ("actions", a)
-        add(f"Open {e['name']}", "Recording" if kind == "recording" else "Script",
-            lambda p=e["path"], k=tab_key, tb=tab: (main.show_tab(k), tb.open_from_library(p)),
+        tab_key = main.TAB_FOR.get(kind, "actions")
+        add(f"Open {e['name']}", kind.capitalize(),
+            lambda p=e["path"], k=tab_key: (main.show_tab(k), main.tabs[k].open_from_library(p)),
             e.get("detail", ""), f"{os.path.basename(e['path'])} file", boost=2 if e.get("favorite") else 0)
     return items
 

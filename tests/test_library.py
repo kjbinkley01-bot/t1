@@ -127,3 +127,16 @@ def test_when_text():
     assert library.when_text(now - 7200, now) == "2 h ago"
     assert library.when_text(now - 90000, now) == "yesterday"
     assert library.when_text(0, now) == "added"
+
+
+def test_chains_are_a_library_kind(tmp_path):
+    from clicker import chains
+    lib = library.Library(str(tmp_path / "data"))
+    a = make_script(tmp_path / "login.clk", "Login", pictures=False)
+    c = chains.new_chain("Daily")
+    c["links"] = [chains.new_link(a), chains.new_link(a)]
+    p = str(tmp_path / "daily.clkchain")
+    chains.save(p, c)
+    e = lib.touch_file(p)
+    assert e["kind"] == "chain" and e["detail"] == "2 scripts" and e["links"] == ["login", "login"]
+    assert [x["path"] for x in lib.list("login", kind="chain")] == [p]   # found by the scripts it runs

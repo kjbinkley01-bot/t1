@@ -28,6 +28,13 @@ in System Settings > Privacy & Security. For Read Text: `brew install tesseract`
   anything else. Backups include your favorites. A new, empty script shows your favorite and recent scripts
   over the step list, and every "choose a script" button (hotkeys, schedule, phone remote, Run Script File)
   picks from the Library.
+* **Chains** (new tab): build small scripts that each do one job, then chain them as cards: log in, collect
+  rewards, sell items... Each card runs its script just as it would on its own (its window, speed and
+  pictures), with its own options: how many times, how long to wait before it, and whether a failure stops
+  the chain, skips to the next card or tries again. Drag cards to reorder them; variables set by one script
+  carry on to the next. While it runs, the current card glows and finished ones get a tick. Chains are saved
+  as .clkchain files and live in the Library too (with their own filter), and each script's run still shows
+  up in History.
 * **Command palette (Ctrl+K** or the search icon): type a few letters to run any command, jump to a tab,
   start a new step of any type, go to a step of the open script, open a Library file, or switch wallpaper.
   Arrow keys and Enter; letters in order work too ("nsc" finds New script).

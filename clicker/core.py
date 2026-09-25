@@ -87,6 +87,7 @@ class CursorSampler:
 
 # events where only the newest one matters; older ones are dropped when the queue backs up
 COALESCE = {("script", "step"), ("script", "log"), ("script", "state"), ("script", "run"), ("script", "progress"),
+            ("script", "chain"),
             ("script", "highlight"), ("app", "cursor"), ("trigger", "highlight")}
 
 

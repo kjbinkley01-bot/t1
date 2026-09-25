@@ -23,7 +23,8 @@ from . import glass
 from .glass import Backdrop, Mode, font, icon_pixmap, paint_glass
 from .widgets import GlassButton, SegmentedTabs, apply_style
 
-TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"), ("triggers", "Screen Triggers"),
+TABS = [("actions", "Action Script"), ("recorder", "Macro Recorder"), ("chains", "Chains"),
+        ("triggers", "Screen Triggers"),
         ("import", "Import Script"), ("history", "History")]
 AUTOSAVE_MS = 60_000
 
@@ -403,6 +404,7 @@ class GlassApp(QMainWindow):
         from .tab_actions import ActionTab
         from .tab_history import HistoryTab
         from .tab_import import ImportTab
+        from .tab_chains import ChainsTab
         from .tab_recorder import RecorderTab
         from .tab_triggers import TriggersTab
         surface = Surface()
@@ -445,10 +447,11 @@ class GlassApp(QMainWindow):
         self.stack = QStackedWidget()
         self.action_tab = ActionTab(self)
         self.recorder_tab = RecorderTab(self)
+        self.chains_tab = ChainsTab(self)
         self.triggers_tab = TriggersTab(self)
         self.import_tab = ImportTab(self)
         self.history_tab = HistoryTab(self)
-        self.tabs = {"actions": self.action_tab, "recorder": self.recorder_tab,
+        self.tabs = {"actions": self.action_tab, "recorder": self.recorder_tab, "chains": self.chains_tab,
                      "triggers": self.triggers_tab, "import": self.import_tab, "history": self.history_tab}
         self.pages = {}
         for key, _ in TABS:
@@ -1050,7 +1053,8 @@ class GlassApp(QMainWindow):
     def _library_shortcut(self):
         from PySide6.QtGui import QKeySequence, QShortcut
         s = QShortcut(QKeySequence("Ctrl+O"), self)
-        s.activated.connect(lambda: self.open_library("recording" if self.current_tab == "recorder" else "script"))
+        s.activated.connect(lambda: self.open_library({"recorder": "recording", "chains": "chain"}.get(
+            self.current_tab, "script")))
         s = QShortcut(QKeySequence("Ctrl+K"), self)
         s.activated.connect(self.open_palette)
 
@@ -1058,18 +1062,19 @@ class GlassApp(QMainWindow):
         from .commandbar import open_palette
         open_palette(self)
 
+    TAB_FOR = {"script": "actions", "recording": "recorder", "chain": "chains"}  # where each kind of file opens
+
     def open_library(self, kind="script"):
         """Show the Library; open what's picked in its own tab (or fall back to a file dialog)."""
         from .library_dialog import LibraryDialog
         d = LibraryDialog(self, kind)
         d.exec()
         if d.browse:
-            (self.recorder_tab if kind == "recording" else self.action_tab).browse()
+            self.tabs[self.TAB_FOR.get(kind, "actions")].browse()
         elif d.chosen is not None:
-            e = d.chosen
-            tab_key, tab = ("recorder", self.recorder_tab) if e["kind"] == "recording" else ("actions", self.action_tab)
-            self.show_tab(tab_key)
-            tab.open_from_library(e["path"])
+            key = self.TAB_FOR.get(d.chosen["kind"], "actions")
+            self.show_tab(key)
+            self.tabs[key].open_from_library(d.chosen["path"])
 
     def remember(self, path, kind, info):
         """A script or recording was opened or saved: keep it (and a fresh thumbnail) in the Library."""
@@ -1539,7 +1544,7 @@ class GlassApp(QMainWindow):
                 self.tray.message("Clicker is still running",
                                   "Script hotkeys keep working. Right-click the tray icon to quit.")
             return
-        if not self.action_tab.confirm_discard("closing"):
+        if not (self.action_tab.confirm_discard("closing") and self.chains_tab.confirm_discard("closing")):
             self._quitting = False
             e.ignore()
             return

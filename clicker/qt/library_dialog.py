@@ -20,7 +20,10 @@ from .widgets import Caption, GlassButton, mode_of
 
 CARD_W, CARD_H = 216, 196
 THUMB_H = 118
-FILTERS = [("all", "All"), ("script", "Scripts"), ("recording", "Recordings"), ("favorites", "Favorites")]
+FILTERS = [("all", "All"), ("script", "Scripts"), ("recording", "Recordings"), ("chain", "Chains"),
+           ("favorites", "Favorites")]
+KINDS = ("script", "recording", "chain")
+BADGE = {"script": "Script", "recording": "Recording", "chain": "Chain"}
 _pixmaps = {}
 
 
@@ -126,11 +129,13 @@ class LibraryCard(QWidget):
             p.drawPixmap(QRectF(tr.center().x() - w / 2, tr.center().y() - h / 2, w, h), pm, QRectF(pm.rect()))
         elif e.get("kind") == "recording":
             self._paint_timeline(p, tr, e)
+        elif e.get("kind") == "chain":
+            self._paint_chain(p, tr, e)
         else:
             self._paint_steps(p, tr, e)
         p.restore()
         # kind badge and star
-        badge = "Recording" if e.get("kind") == "recording" else "Script"
+        badge = BADGE.get(e.get("kind"), "Script")
         p.setFont(font(7.5, QFont.Weight.DemiBold))
         bw = QFontMetrics(p.font()).horizontalAdvance(badge) + 14
         br = QRectF(tr.x() + 8, tr.bottom() - 26, bw, 18)
@@ -194,6 +199,33 @@ class LibraryCard(QWidget):
             p.setFont(font(6.5, QFont.Weight.DemiBold))
             p.drawText(box.adjusted(6, 0, -4, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, a)
 
+    def _paint_chain(self, p, r, e):
+        """A chain: its scripts as little linked cards."""
+        names = (e.get("links") or [])[:4]
+        if not names:
+            p.setPen(QColor(255, 255, 255, 120))
+            p.setFont(font(8.5))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, "Empty chain")
+            return
+        n = len(names)
+        gap = 12
+        w = min(64.0, (r.width() - 24 - gap * (n - 1)) / n)
+        h = min(44.0, r.height() - 44)
+        x0 = r.center().x() - (n * w + (n - 1) * gap) / 2
+        y = r.y() + 10 + (r.height() - 34 - h) / 2
+        for k, nm in enumerate(names):
+            box = QRectF(x0 + k * (w + gap), y, w, h)
+            if k:
+                p.setPen(QPen(QColor(255, 196, 107, 220), 2))
+                p.drawLine(QPointF(box.x() - gap + 2, box.center().y()), QPointF(box.x() - 2, box.center().y()))
+            p.setPen(QPen(QColor(255, 255, 255, 90), 1))
+            p.setBrush(QColor(90, 160, 255, 150))
+            p.drawRoundedRect(box, 8, 8)
+            p.setPen(QColor(255, 255, 255, 235))
+            p.setFont(font(6.5, QFont.Weight.DemiBold))
+            label = QFontMetrics(p.font()).elidedText(nm, Qt.TextElideMode.ElideRight, int(w - 8))
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
+
     def _paint_timeline(self, p, r, e):
         """No picture: the recording as a little timeline of clicks and key presses."""
         mid = r.y() + r.height() * 0.42
@@ -223,12 +255,12 @@ class LibraryDialog(dialogs.GlassDialog):
         self.lib = main.library
         self.chosen, self.browse = None, False
         self.lock = kind if pick else None
-        self.filter = kind if kind in ("script", "recording") and not pick else "all"
+        self.filter = kind if kind in KINDS and not pick else "all"
         self.browse_kind = kind or "script"
         self.cards, self.sel = [], None
         top = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search scripts and recordings")
+        self.search.setPlaceholderText("Search scripts, recordings and chains")
         self.search.setClearButtonEnabled(True)
         self.search.setMinimumWidth(300)
         self.search.addAction(QIcon(icon_pixmap("magnifying-glass", main.mode.detail, 16,
@@ -282,7 +314,7 @@ class LibraryDialog(dialogs.GlassDialog):
 
     def refresh(self):
         q = self.search.text()
-        kind = self.lock or (self.filter if self.filter in ("script", "recording") else None)
+        kind = self.lock or (self.filter if self.filter in KINDS else None)
         entries = self.lib.list(q, kind=kind, favorites=self.filter == "favorites")
         while self.grid.count():
             it = self.grid.takeAt(0)
