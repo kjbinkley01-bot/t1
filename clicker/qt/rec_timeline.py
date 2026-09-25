@@ -365,6 +365,21 @@ class RecordingEditor(GlassPanel):
             head.addWidget(b)
         lay.addLayout(head)
 
+        self.auto = QWidget()
+        al = QHBoxLayout(self.auto)
+        al.setContentsMargins(12, 6, 8, 6)
+        al.setSpacing(10)
+        self.auto.setObjectName("autoTrim")
+        self.auto.setStyleSheet("#autoTrim { background: rgba(10,132,255,40); border: 1px solid rgba(127,220,255,110);"
+                                " border-radius: 14px; }")
+        self.lbl_auto = QLabel("")
+        al.addWidget(self.lbl_auto, 1)
+        b = GlassButton("Review", icon="magnifying-glass", kind="primary", small=True)
+        b.clicked.connect(self.review_suggestions)
+        al.addWidget(b)
+        self.auto.hide()
+        lay.addWidget(self.auto)
+
         box = QHBoxLayout()
         box.setSpacing(0)
         labels = QWidget()
@@ -531,7 +546,51 @@ class RecordingEditor(GlassPanel):
         self.e_start.setText(fmt_t(0))
         self.e_end.setText(fmt_t(now))
         self._refresh_pause_button()
+        self._refresh_auto()
         self._on_selection()
+
+    def _refresh_auto(self):
+        sug = recedit.suggest(self.tab.events) if self.tab.events else []
+        self._suggestions = sug
+        if not sug:
+            self.auto.hide()
+            return
+        now = recedit.length(self.tab.events)
+        saves = now - recedit.length(recedit.apply_suggestions(self.tab.events, {x["id"] for x in sug}))
+        n = len(sug)
+        self.lbl_auto.setText(f"Auto-trim found {n} improvement{'s' if n != 1 else ''}"
+                              + (f" that make this {saves:.1f} s shorter ({fmt_t(recedit.length(self.tab.events))} → "
+                                 f"{fmt_t(recedit.length(self.tab.events) - saves)})" if saves > 0.05 else ""))
+        self.auto.show()
+
+    def review_suggestions(self):
+        from PySide6.QtWidgets import QDialog
+
+        from . import dialogs
+        from .widgets import GlassSwitch
+        sug = getattr(self, "_suggestions", [])
+        if not sug:
+            return
+        d = dialogs.GlassDialog(self.tab.main, "Auto-trim")
+        note = QLabel("Pick what to change. It's one step, so Undo puts it all back.")
+        note.setProperty("role", "detail")
+        d.body.addWidget(note)
+        switches = []
+        for x in sug:
+            sw = GlassSwitch(x["title"] + (f"  (−{x['saves']:.1f} s)" if x["saves"] > 0.05 else ""))
+            sw.setChecked(True)
+            d.body.addWidget(sw)
+            switches.append((sw, x["id"]))
+        d.add_buttons("Apply")
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        ids = {i for sw, i in switches if sw.isChecked()}
+        if not ids:
+            return
+        before = recedit.length(self.tab.events)
+        new = recedit.apply_suggestions(self.tab.events, ids)
+        self._apply(new, f"Auto-trim: {before - recedit.length(new):.1f} s shorter, "
+                         f"{len(self.tab.events) - len(new)} fewer events")
 
     def _pause_values(self):
         try:
