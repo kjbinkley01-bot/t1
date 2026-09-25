@@ -19,6 +19,19 @@ Clicker can find it.
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
 
+## What's new in 2.10
+* **If / Else If / Else / End If** and **Try / On Error / End Try** blocks (Blocks group). If checks an image,
+  pixel color, variable, text on screen or a window. A step that fails inside Try jumps to On Error (the
+  message is in `{error}`) instead of stopping the whole script. Steps inside blocks are indented.
+* **Flow chart:** the Chart button shows the script as boxes and arrows beside the list. Drag a box to move
+  the step, drag its link handle onto another box to set a jump target, double-click to edit, Ctrl+wheel zooms.
+* **Auto-trim** for recordings: the timeline suggests cutting idle time at the start and end, shortening long
+  pauses, removing typed-then-deleted characters and thinning dense mouse paths, with the time each saves.
+  Review picks which to apply; it's one undo step.
+* **Web dashboard:** Settings > Phone remote control > Web page on your Wi-Fi. Open the shown address in your
+  phone's browser on the same network, enter the PIN, and see what's running, pause/stop it, start allowed
+  scripts, view the screen and recent runs. Only local-network devices can connect; wrong PINs lock out.
+
 ## What's new in 2.9
 **New steps**
 * **Wait for Text / If Text on Screen:** read a region (as text or a number) and compare it: *contains
