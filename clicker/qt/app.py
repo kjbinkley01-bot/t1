@@ -1635,12 +1635,10 @@ class GlassApp(QMainWindow):
 
 
 def main():
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        except Exception:
-            pass
+    # No SetProcessDpiAwareness call here: Windows lets a program set its DPI mode only once, and Qt sets
+    # per-monitor v2 itself when the QApplication is made (calling it first made Qt's call fail with
+    # "SetProcessDpiAwarenessContext() failed: Access is denied"). Nothing may set it before this line;
+    # mss does too, but only when it first grabs the screen, after the window exists.
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(model.APP_NAME)
     glass.load_fonts()
