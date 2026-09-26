@@ -51,6 +51,13 @@ class Ctx:
     def run_script(self, path):
         self.app.post("app", "run_script", path)
 
+    def script_job(self, path, emit):
+        """A job for the script (or chain) path names, reporting through emit; run it on the caller's thread."""
+        found = self.app.library.find_script(path)
+        if not found:
+            raise ValueError(f"can't find the script {path}")
+        return self.app.job_for_file(found, values=dict(self.app.last_inputs), emit=emit)
+
 
 class CursorSampler:
     """Reads the cursor position and the pixel under it on a background thread.

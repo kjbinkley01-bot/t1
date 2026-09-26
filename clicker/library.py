@@ -252,6 +252,22 @@ class Library:
         out.sort(key=lambda e: (max(e.get("used", 0), e.get("added", 0)), e["path"]), reverse=True)
         return out
 
+    def find_script(self, value):
+        """The file a trigger or remote command means by value: a path (quotes, a missing .clk and
+        {~} are forgiven), else a Library script or chain whose name or file name is value. None if nothing fits."""
+        v = os.path.expanduser(str(value or "").strip().strip('"\'').strip())
+        if not v:
+            return None
+        for p in (v, v + ".clk", v + ".clkchain"):
+            if os.path.isfile(p):
+                return os.path.abspath(p)
+        want = os.path.splitext(os.path.basename(v))[0].lower()
+        for e in self.list():
+            if e.get("kind") in ("script", "chain") and not e["missing"] and want in (
+                    str(e.get("name") or "").lower(), os.path.splitext(os.path.basename(e["path"]))[0].lower()):
+                return e["path"]
+        return None
+
 
 def when_text(ts, now=None):
     """'just now', '5 min ago', 'yesterday', 'Mar 3'."""

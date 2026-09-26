@@ -138,7 +138,7 @@ class TriggerEngine:
     """Watches the screen on a background thread.
 
     ctx must provide: script_running(), hold(), release(), pause(), resume(),
-    rewind(n), stop_all(), run_script(path)
+    rewind(n), stop_all(), run_script(path), script_job(path, emit)
     """
 
     def __init__(self, get_rules, assets, emit, ctx, get_target=None, target_backend=None):
@@ -156,6 +156,7 @@ class TriggerEngine:
         self.thread = None
         self.states = {}
         self._reset_flag = False
+        self._held = False
 
     @property
     def running(self):
@@ -274,6 +275,7 @@ class TriggerEngine:
         held = bool(rule.get("pause_script")) and running
         if held:
             self.ctx.hold()
+        self._held = held
         done = []
         try:
             if match and match.w < 4000:
@@ -301,6 +303,21 @@ class TriggerEngine:
         cool = rule.get("cooldown_s") or 0
         self.emit("log", (name, f"Matched{where}{score}. {'; '.join(done) or 'No outputs'}."
                           + (f" Cooldown {cool} s." if cool else ""), True))
+
+    def _run_here(self, rule, path):
+        """Run a script while the running one waits (Pause running script), then let it carry on."""
+        name = rule.get("name") or "Rule"
+
+        def emit(kind, payload=None):
+            if kind == "log":
+                self.emit("log", (name, str(payload), False))
+        job = self.ctx.script_job(path, emit)
+        job.stop_event = self.stop_event        # turning Monitoring off (or Emergency stop) stops it too
+        self.emit("log", (name, f"Running {job.label} while the script waits", True))
+        job._main()
+        ok, why = job.result or (False, "Did not run")
+        if not ok:
+            raise ValueError(f"{job.label}: {why}")
 
     def _output(self, rule, o, match):
         t = o.get("type")
@@ -344,7 +361,10 @@ class TriggerEngine:
             if not ok:
                 raise ValueError(f"image still visible after {v or 10} s")
         elif t == "run_script":
-            self.ctx.run_script(v)
+            if self._held:
+                self._run_here(rule, v)
+            else:
+                self.ctx.run_script(v)
         elif t == "pause_script":
             self.ctx.pause()
         elif t == "resume_script":

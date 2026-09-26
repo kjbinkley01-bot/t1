@@ -178,3 +178,53 @@ def test_new_rules_act_on_their_own_and_script_only_rules_say_why_they_wait(fake
     eng.thread.join(2)
     waits = [p for k, p in events if k == "log" and "only acts while a script runs" in p[1]]
     assert len(waits) == 1 and waits[0][0] == "Helper"   # said once, not every check
+
+
+def test_run_script_output_runs_inside_the_pause_of_the_running_script(fake_inputs, screen):
+    tpl = make_template(seed=21)
+    screen.paste(tpl, 100, 100)
+    assets = AssetStore()
+    assets.put_image("full.png", tpl)
+    rule = triggers.new_rule("Clear inventory")
+    rule.update(active="script", pause_script=True, hold_ms=0, check_ms=50, max_fires=1,
+                outputs=[{"type": "run_script", "value": "cut fish"}])
+    rule["condition"]["image"] = "full.png"
+    seen = []
+
+    class Job:
+        label = "cut fish"
+        result = None
+
+        def _main(self):
+            seen.append(("ran while held", held[0]))
+            self.result = (True, "Finished")
+
+    held = [False]
+
+    class Running(Ctx):
+        def script_running(self):
+            return True
+
+        def hold(self):
+            held[0] = True
+
+        def release(self):
+            held[0] = False
+
+        def script_job(self, path, emit):
+            seen.append(("asked for", path))
+            return Job()
+
+        def run_script(self, path):
+            seen.append(("posted", path))
+
+    events = []
+    eng = triggers.TriggerEngine(lambda: [rule], assets, lambda k, p=None: events.append((k, p)), Running())
+    eng.start()
+    deadline = time.monotonic() + 5
+    while len(seen) < 2 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    eng.stop()
+    eng.thread.join(2)
+    assert seen == [("asked for", "cut fish"), ("ran while held", True)]
+    assert held[0] is False                                  # the running script carries on afterwards

@@ -59,8 +59,11 @@ class OutputDialog(dialogs.GlassDialog):
         self.value = QLineEdit(str(output.get("value") or ""))
         self.grab = GlassButton("Grab", icon="crosshair", small=True)
         self.grab.clicked.connect(self._grab)
+        self.choose = GlassButton("Choose...", icon="folder-open", small=True)
+        self.choose.clicked.connect(self._choose)
         row.addWidget(self.value, 1)
         row.addWidget(self.grab)
+        row.addWidget(self.choose)
         self.body.addLayout(row)
         self.hint = detail("")
         self.body.addWidget(self.hint)
@@ -74,9 +77,17 @@ class OutputDialog(dialogs.GlassDialog):
 
     def _refresh(self, *_):
         tid = self._tid()
+        self.grab.setVisible(tid != "run_script")
         self.grab.setEnabled(tid == "click_at")
+        self.choose.setVisible(tid == "run_script")
         self.value.setEnabled(tid not in triggers.NO_VALUE)
         self.hint.setText("No value needed." if tid in triggers.NO_VALUE else triggers.OUTPUT_HINT.get(tid, ""))
+
+    def _choose(self):
+        from .library_dialog import pick_script
+        path = pick_script(self.main, "Script to run", parent=self, chains=True)
+        if path:
+            self.value.setText(path)
 
     def _grab(self):
         self.hide()
@@ -106,6 +117,12 @@ class OutputDialog(dialogs.GlassDialog):
         if tid in ("press_keys", "type_text", "run_script") and not val:
             self.hint.setText("This output needs a value")
             return
+        if tid == "run_script":
+            found = self.main.library.find_script(val)
+            if not found:
+                self.hint.setText("Can't find that script. Use Choose... to pick it.")
+                return
+            val = found
         self.result_output = {"type": tid, "value": val}
         super().accept()
 
@@ -538,6 +555,14 @@ class TriggersTab(QWidget):
         self.thumb.setText("")
         self.thumb.setPixmap(pixmap_from_bgr(img, 190, 86))
 
+    def _outputs_changed(self):
+        """Outputs take effect at once (a running monitor uses them on its next match), no Save rule needed."""
+        self._refresh_outputs()
+        rule = self._rule(self.sel_id)
+        if rule is not None:
+            rule["outputs"] = copy.deepcopy(self.outputs)
+            self.main.save_rules()
+
     def _refresh_outputs(self):
         cur = self.lst.currentRow()
         self.lst.clear()
@@ -645,7 +670,7 @@ class TriggersTab(QWidget):
         o = edit_output(self.main)
         if o:
             self.outputs.append(o)
-            self._refresh_outputs()
+            self._outputs_changed()
 
     def edit_output(self):
         i = self.lst.currentRow()
@@ -654,20 +679,21 @@ class TriggersTab(QWidget):
         o = edit_output(self.main, self.outputs[i])
         if o:
             self.outputs[i] = o
-            self._refresh_outputs()
+            self._outputs_changed()
 
     def remove_output(self):
         i = self.lst.currentRow()
         if i >= 0:
             del self.outputs[i]
-            self._refresh_outputs()
+            self._outputs_changed()
 
     def move_output(self, d):
         i = self.lst.currentRow()
         if i < 0 or not 0 <= i + d < len(self.outputs):
             return
         self.outputs[i], self.outputs[i + d] = self.outputs[i + d], self.outputs[i]
-        self._refresh_outputs()
+        self.lst.setCurrentRow(i + d)
+        self._outputs_changed()
         self.lst.setCurrentRow(i + d)
 
     def capture_image(self, into=None):

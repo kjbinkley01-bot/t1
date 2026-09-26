@@ -895,10 +895,15 @@ class GlassApp(QMainWindow):
         if self.job_running():
             self.triggers_tab.add_log("Run script", "Skipped: a job is already running", False)
             return
+        found = self.library.find_script(path)
+        if not found:
+            self.triggers_tab.add_log("Run script", f"Can't find the script {path}. Edit the output and use "
+                                                    "Choose... to pick it.", False)
+            return
         try:
-            job = self.job_for_file(path, values=dict(self.last_inputs))
+            job = self.job_for_file(found, values=dict(self.last_inputs))
         except Exception as e:
-            self.triggers_tab.add_log("Run script", f"Could not open {path}: {e}", False)
+            self.triggers_tab.add_log("Run script", f"Could not open {found}: {e}", False)
             return
         self.start_job(job, self.import_tab)
 
@@ -1122,7 +1127,7 @@ class GlassApp(QMainWindow):
         except OSError:
             pass
 
-    def job_for_file(self, path, name=None, values=None):
+    def job_for_file(self, path, name=None, values=None, emit=None):
         """A ready to start job for a script or chain file (inputs filled from the last values used)."""
         from ..runner import Runner
 
@@ -1139,12 +1144,12 @@ class GlassApp(QMainWindow):
             for link in chain["links"]:
                 vals.update(remembered(storage.load_script(link["path"])[0]))
             vals.update(values or {})
-            return chains.ChainJob(chain, self.emitter("script"), path=path, inputs_map=vals, save_log=save_log)
+            return chains.ChainJob(chain, emit or self.emitter("script"), path=path, inputs_map=vals, save_log=save_log)
         script, assets = storage.load_script(path)
         st = script.get("settings") or {}
         vals = remembered(script)
         vals.update(values or {})
-        return Runner(script, assets, self.emitter("script"), inputs_map=vals, speed=st.get("speed", 1.0),
+        return Runner(script, assets, emit or self.emitter("script"), inputs_map=vals, speed=st.get("speed", 1.0),
                       repeat=st.get("repeat", 1), random_delay_ms=st.get("random_delay_ms", 0),
                       label=name or scripthotkeys.script_name(path), save_log=save_log, path=path)
 

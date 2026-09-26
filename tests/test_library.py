@@ -140,3 +140,15 @@ def test_chains_are_a_library_kind(tmp_path):
     e = lib.touch_file(p)
     assert e["kind"] == "chain" and e["detail"] == "2 scripts" and e["links"] == ["login", "login"]
     assert [x["path"] for x in lib.list("login", kind="chain")] == [p]   # found by the scripts it runs
+
+
+def test_find_script_forgives_names_quotes_and_missing_extensions(tmp_path):
+    lib = library.Library(str(tmp_path / "data"))
+    p = make_script(tmp_path / "cut fish.clk", name="Cut fish", pictures=False)
+    assert lib.find_script(p) == os.path.abspath(p)
+    assert lib.find_script(f'"{p}"') == os.path.abspath(p)        # Windows "Copy as path" adds quotes
+    assert lib.find_script(p[:-4]) == os.path.abspath(p)          # no .clk
+    assert lib.find_script("cut fish") is None                    # not in the Library yet
+    lib.touch_file(p)
+    assert lib.find_script("Cut Fish") == lib.entries[next(iter(lib.entries))]["path"]
+    assert lib.find_script("") is None and lib.find_script("nothing") is None
