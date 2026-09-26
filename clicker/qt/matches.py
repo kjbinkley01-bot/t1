@@ -48,8 +48,7 @@ class MatchOverlay(QWidget):
         self.dismiss()
 
     def _box(self, p, rect, score, good):
-        x, y, w, h = rect
-        r = QRectF(x - self.x() - 3, y - self.y() - 3, w + 6, h + 6)
+        r = QRectF(glass.to_logical_rect(*rect).translated(-self.x(), -self.y())).adjusted(-3, -3, 3, 3)
         color = QColor(glass.GREEN) if good else QColor("#ffb340")
         pen = QPen(color, 3 if good else 2, Qt.PenStyle.SolidLine if good else Qt.PenStyle.DashLine)
         p.setPen(pen)

@@ -9,7 +9,7 @@ import threading
 import traceback
 import webbrowser
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QRegion
 from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QMainWindow, QMenu, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
@@ -296,8 +296,8 @@ class Highlight(QWidget):
                                                       curve=glass.EXIT, attr="_fade", done=self.hide))
 
     def flash(self, rect, ms=700):
-        x, y, w, h = (int(v) for v in rect)
-        self.setGeometry(QRect(x - 5, y - 5, w + 10, h + 10))
+        # rect is in real screen pixels; the window is placed in Qt's scaled units
+        self.setGeometry(glass.to_logical_rect(*(int(v) for v in rect)).adjusted(-5, -5, 5, 5))
         a = getattr(self, "_fade", None)
         if a is not None:
             a.stop()

@@ -164,3 +164,17 @@ def test_trigger_rules_fire_on_any_of_their_images_and_keep_them_when_saved(fake
     storage.save_triggers(p, [rule], assets)
     _rules, got = storage.load_triggers(p)
     assert got.has("b.png")
+
+
+def test_new_rules_act_on_their_own_and_script_only_rules_say_why_they_wait(fake_inputs, screen):
+    assert triggers.new_rule()["active"] == "always"
+    rule = triggers.new_rule("Helper")
+    rule.update(active="script", check_ms=50)
+    events = []
+    eng = triggers.TriggerEngine(lambda: [rule], AssetStore(), lambda k, p=None: events.append((k, p)), Ctx())
+    eng.start()
+    time.sleep(0.3)
+    eng.stop()
+    eng.thread.join(2)
+    waits = [p for k, p in events if k == "log" and "only acts while a script runs" in p[1]]
+    assert len(waits) == 1 and waits[0][0] == "Helper"   # said once, not every check

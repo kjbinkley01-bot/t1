@@ -60,7 +60,7 @@ def new_rule(name="New rule"):
         "outputs": [{"type": "click_match", "value": "left"}],
         "cooldown_s": 5,
         "max_fires": 0,
-        "active": "script",
+        "active": "always",   # new rules work on their own; "script" makes them helpers for a running script
         "pause_script": True,
     }
 
@@ -166,6 +166,7 @@ class TriggerEngine:
             return
         self.stop_event = threading.Event()
         self.states = {}
+        self._waiting = set()   # rules skipped because they only act while a script runs (told once)
         self.thread = threading.Thread(target=self._main, daemon=True)
         self.thread.start()
         self.emit("log", ("Monitoring", f"Started with {self.active_count()} active rules", False))
@@ -231,7 +232,13 @@ class TriggerEngine:
                     st = self.states[rid] = _State(rule, self.assets)
                 if rule.get("active", "script") == "script" and not running:
                     st.true_since = None
+                    if rid not in self._waiting:
+                        self._waiting.add(rid)
+                        self.emit("log", (rule.get("name") or "Rule", "Not checking: this rule only acts while a "
+                                          "script runs, and none is. Set Active to Always to use it on its own.",
+                                          False))
                     continue
+                self._waiting.discard(rid)
                 if now < st.next_check:
                     continue
                 st.next_check = now + max(50, int(rule.get("check_ms") or 250)) / 1000.0

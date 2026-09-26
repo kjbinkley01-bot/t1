@@ -3,7 +3,7 @@
 import os
 
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                                QMessageBox, QVBoxLayout, QWidget)
 
@@ -169,50 +169,61 @@ def ask_inputs(main, inputs, current):
 
 
 class RegionPicker(QWidget):
-    """Freeze the screen, dim it, and let the user drag a box. Calls done(region, bgr image) or (None, None)."""
+    """One monitor's part of a frozen, dimmed screenshot; drag a box on it. Shown at the monitor's real
+    resolution (at 150% scaling, 1.5 screenshot pixels per window unit), so nothing is zoomed or cut off."""
 
-    def __init__(self, main, done, prompt):
+    def __init__(self, group, frame, geo, phys, k, prompt):
         super().__init__(None, Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint |
                          Qt.WindowType.Tool)
-        self.main, self.done_cb, self.prompt = main, done, prompt
-        self.frame, (self.ox, self.oy) = vision.capture(None)
         import cv2
-        rgb = cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB)
+        self.group, self.prompt, self.k = group, prompt, k
+        self.px, self.py = phys[0], phys[1]
+        ox, oy = group.ox, group.oy
+        fh, fw = frame.shape[:2]
+        x0, y0 = max(0, phys[0] - ox), max(0, phys[1] - oy)
+        part = frame[y0:min(fh, y0 + phys[3]), x0:min(fw, x0 + phys[2])]
+        rgb = cv2.cvtColor(part, cv2.COLOR_BGR2RGB)
         self.full = glass.np_to_pixmap(rgb)
-        dim = (rgb.astype("float32") * 0.45).astype("uint8")
-        self.dim = glass.np_to_pixmap(dim)
-        h, w = self.frame.shape[:2]
-        self.setGeometry(QRect(self.ox, self.oy, w, h))
+        self.dim = glass.np_to_pixmap((rgb.astype("float32") * 0.45).astype("uint8"))
+        for pm in (self.full, self.dim):
+            pm.setDevicePixelRatio(k)
+        self.setGeometry(geo)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.start = self.end = None
+
+    def real(self, pt):
+        """A point on this overlay in real screen pixels."""
+        return round(self.px + pt.x() * self.k), round(self.py + pt.y() * self.k)
 
     def paintEvent(self, _e):
         p = QPainter(self)
         p.drawPixmap(0, 0, self.dim)
         if self.start and self.end:
             r = QRect(self.start, self.end).normalized()
-            p.drawPixmap(r, self.full, r)
+            k = self.k
+            p.drawPixmap(QRectF(r), self.full, QRectF(r.x() * k, r.y() * k, r.width() * k, r.height() * k))
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(QPen(glass.ACCENT, 2))
             p.drawRect(r)
             p.setPen(QColor("#ffffff"))
             p.setFont(font(10, QFont.Weight.DemiBold))
-            p.drawText(r.x(), max(16, r.y() - 8), f"{r.x() + self.ox}, {r.y() + self.oy}   {r.width()} x {r.height()}")
-        # instruction pill
-        scr = QGuiApplication.primaryScreen().geometry()
-        pill = QRectF(scr.center().x() - self.ox - 230, 28 - self.oy + scr.y(), 460, 44)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(20, 22, 36, 220))
-        p.drawPath(rounded(pill, 22))
-        p.setPen(QColor("#ffffff"))
-        p.setFont(font(10.5, QFont.Weight.Medium))
-        p.drawText(pill, Qt.AlignmentFlag.AlignCenter, self.prompt)
+            x, y = self.real(r.topLeft())
+            w, h = round(abs(self.end.x() - self.start.x()) * k), round(abs(self.end.y() - self.start.y()) * k)
+            p.drawText(r.x(), max(16, r.y() - 8), f"{x}, {y}   {w} x {h}")
+        if self.screen() is QGuiApplication.primaryScreen() or len(self.group.pickers) == 1:
+            pill = QRectF(self.width() / 2 - 230, 28, 460, 44)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(20, 22, 36, 220))
+            p.drawPath(rounded(pill, 22))
+            p.setPen(QColor("#ffffff"))
+            p.setFont(font(10.5, QFont.Weight.Medium))
+            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, self.prompt)
         p.end()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.RightButton:
-            self._finish(None)
+            self.group.finish(None)
             return
         self.start = self.end = e.position().toPoint()
         self.update()
@@ -225,18 +236,39 @@ class RegionPicker(QWidget):
     def mouseReleaseEvent(self, e):
         if not self.start:
             return
-        r = QRect(self.start, e.position().toPoint()).normalized()
-        if r.width() < 3 or r.height() < 3:
+        a, b = self.start, e.position().toPoint()
+        x, y = self.real(QPoint(min(a.x(), b.x()), min(a.y(), b.y())))
+        x2, y2 = self.real(QPoint(max(a.x(), b.x()), max(a.y(), b.y())))
+        if x2 - x < 3 or y2 - y < 3:
             self.start = None
             return
-        self._finish([r.x() + self.ox, r.y() + self.oy, r.width(), r.height()])
+        self.group.finish([x, y, x2 - x, y2 - y])
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key.Key_Escape:
-            self._finish(None)
+            self.group.finish(None)
 
-    def _finish(self, region):
-        self.close()
+
+class RegionPickers:
+    """A RegionPicker on every monitor, all showing one screenshot taken the moment it opened."""
+
+    def __init__(self, main, done, prompt):
+        self.main, self.done_cb = main, done
+        self.frame, (self.ox, self.oy) = vision.capture(None)
+        self.pickers = []
+        self.pickers = [RegionPicker(self, self.frame, geo, phys, k, prompt)
+                        for _s, geo, phys, k in glass.screens()]
+
+    def show(self):
+        for pk in self.pickers:
+            pk.show()
+        under = next((pk for pk in self.pickers if pk.geometry().contains(QCursor.pos())), self.pickers[0])
+        under.activateWindow()
+        under.setFocus()
+
+    def finish(self, region):
+        for pk in self.pickers:
+            pk.close()
         self.main.showNormal()
         self.main.raise_()
         self.main.activateWindow()
@@ -266,14 +298,12 @@ def select_region(main, done, prompt="Drag to select an area. Esc cancels."):
 
     def begin():
         try:
-            main._picker = RegionPicker(main, done, prompt)
+            main._picker = RegionPickers(main, done, prompt)
         except Exception:
             main.showNormal()
             done(None, None)
             return
         main._picker.show()
-        main._picker.activateWindow()
-        main._picker.setFocus()
     QTimer.singleShot(350, begin)
 
 

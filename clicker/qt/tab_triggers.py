@@ -738,7 +738,14 @@ class TriggersTab(QWidget):
         extra = ""
         if match and rule["condition"]["kind"].startswith("image"):
             extra = f" at {match.center[0]}, {match.center[1]} ({int(match.score * 100)}%)"
-        self._msg(("Condition is TRUE" if ok else "Condition is false") + extra, "ok" if ok else "warn")
+        note = ""
+        if ok and rule.get("active") == "script" and not self.main.job_running():
+            note = ". It won't act yet: it only acts while a script runs (set Active to Always)"
+        elif ok and not self.main.triggers.running:
+            note = ". Turn Monitoring on for it to act"
+        elif ok:
+            note = ". (Test only checks; Monitoring does the actions)"
+        self._msg(("Condition is TRUE" if ok else "Condition is false") + extra + note, "ok" if ok else "warn")
         if show and match:
             self.main.highlight.flash(self.space.to_screen(match.rect), 1500)
         elif show and rule["condition"].get("region"):

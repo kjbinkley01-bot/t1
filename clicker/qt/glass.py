@@ -411,6 +411,31 @@ def paint_glass(p, rect, radius, backdrop, origin, mode, light=0.7, shadow=True,
     p.drawPath(rounded(rect.adjusted(0.6, 0.6, -0.6, -0.6), radius))
 
 
+def screens():
+    """[(QScreen, logical QRect, physical (x, y, w, h), scale)] for every monitor.
+
+    Screenshots and clicks use real pixels; Qt windows use scaled units (at 150% a 3840 pixel wide screen
+    is 2560 units). Qt keeps each monitor's top left corner at its real position and scales from there.
+    """
+    from PySide6.QtGui import QGuiApplication
+    out = []
+    for s in QGuiApplication.screens():
+        g = s.geometry()
+        k = s.devicePixelRatio() or 1.0
+        out.append((s, g, (g.x(), g.y(), round(g.width() * k), round(g.height() * k)), k))
+    return out
+
+
+def to_logical_rect(x, y, w, h):
+    """A rectangle in real screen pixels as a Qt window rectangle (for outlines drawn over the screen)."""
+    from PySide6.QtCore import QRect
+    cx, cy = x + w / 2, y + h / 2
+    for _s, g, (px, py, pw, ph), k in screens():
+        if px <= cx < px + pw and py <= cy < py + ph:
+            return QRect(round(g.x() + (x - px) / k), round(g.y() + (y - py) / k), round(w / k), round(h / k))
+    return QRect(int(x), int(y), int(w), int(h))
+
+
 def window_origin(widget):
     """Where a widget's top left sits in its window (for sampling the backdrop)."""
     return widget.mapTo(widget.window(), QPointF(0, 0).toPoint())
