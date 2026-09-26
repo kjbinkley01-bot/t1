@@ -183,3 +183,11 @@ def test_key_names_to_virtual_keys(name, expected):
 def test_screen_mode_is_unchanged(fake_inputs):
     r, _ = run(script(S("Left Click", x=3, y=4)))
     assert r.result[0] and fake_inputs.clicks()[0][4] == (3, 4)
+
+
+def test_message_scale_for_windows_that_windows_stretches():
+    from clicker.target import message_scale
+    assert message_scale(0, 96, 144) == 96 / 144      # DPI unaware app on a 150% display
+    assert message_scale(1, 144, 192) == 0.75         # system aware app on a 200% second monitor
+    assert message_scale(2, 144, 144) == 1.0          # per monitor aware: real pixels already
+    assert message_scale(0, 0, 144) == 1.0            # unknown: leave positions alone

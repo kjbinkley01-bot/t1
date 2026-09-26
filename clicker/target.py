@@ -364,6 +364,18 @@ def crop(img, x, y, w, h):
 
 # ---------------------------------------------------------------- Windows backend
 
+def message_scale(awareness, window_dpi, monitor_dpi):
+    """How to turn real screen pixels into the units a window reads its mouse messages in.
+
+    A window that isn't per-monitor DPI aware (awareness 0 or 1) is stretched by Windows on a scaled
+    display (150% and so on) and reads positions in its own smaller units: without this, clicks sent to it
+    land 1.5 times too far right and down, often off the window.
+    """
+    if awareness == 2 or not window_dpi or not monitor_dpi:
+        return 1.0
+    return float(window_dpi) / float(monitor_dpi)
+
+
 class WinBackend:
     """Win32 calls through ctypes. Only constructed on Windows."""
 
@@ -419,6 +431,21 @@ class WinBackend:
             fn.argtypes, fn.restype = args, res
         u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        try:  # Windows 10+: per window DPI, for mouse messages to windows Windows stretches
+            u.GetWindowDpiAwarenessContext.argtypes = [wintypes.HWND]
+            u.GetWindowDpiAwarenessContext.restype = ctypes.c_void_p
+            u.GetAwarenessFromDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            u.GetAwarenessFromDpiAwarenessContext.restype = ctypes.c_int
+            u.GetDpiForWindow.argtypes = [wintypes.HWND]
+            u.GetDpiForWindow.restype = wintypes.UINT
+            u.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+            u.MonitorFromWindow.restype = ctypes.c_void_p
+            u.PhysicalToLogicalPointForPerMonitorDPI.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+            self.shcore = ctypes.windll.shcore
+            self.shcore.GetDpiForMonitor.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(wintypes.UINT),
+                                                     ctypes.POINTER(wintypes.UINT)]
+        except (AttributeError, OSError):
+            self.shcore = None
         u.ChildWindowFromPointEx.argtypes = [wintypes.HWND, wintypes.POINT, wintypes.UINT]
         u.ChildWindowFromPointEx.restype = wintypes.HWND
         u.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
@@ -546,7 +573,9 @@ class WinBackend:
         cur = hwnd
         for _ in range(12):
             ox, oy = self.client_origin(cur)
-            child = self.user32.ChildWindowFromPointEx(cur, self.wt.POINT(sx - ox, sy - oy), 0x0001 | 0x0004)
+            # skip invisible (1), disabled (2) and transparent (4) children: they drop the messages
+            child = self.user32.ChildWindowFromPointEx(cur, self.wt.POINT(sx - ox, sy - oy),
+                                                       0x0001 | 0x0002 | 0x0004)
             if not child or child == cur:
                 break
             cur = child
@@ -591,16 +620,30 @@ class WinBackend:
 
     # ---- background messages
 
+    def _msg_scale(self, hwnd):
+        if self.shcore is None:
+            return 1.0
+        try:
+            u = self.user32
+            aware = u.GetAwarenessFromDpiAwarenessContext(u.GetWindowDpiAwarenessContext(hwnd))
+            x, y = self.wt.UINT(), self.wt.UINT()
+            if self.shcore.GetDpiForMonitor(u.MonitorFromWindow(hwnd, 2), 0, self.ct.byref(x), self.ct.byref(y)):
+                return 1.0
+            return message_scale(aware, u.GetDpiForWindow(hwnd), x.value)
+        except Exception:
+            return 1.0
+
     @staticmethod
     def _lparam_xy(x, y):
         return ((int(y) & 0xFFFF) << 16) | (int(x) & 0xFFFF)
 
     def post_mouse(self, hwnd, kind, pos, button, mods, dbl=False):
         child, cx, cy = self._child_at(hwnd, *pos)
+        k = self._msg_scale(child)
         flags = 0
         for m in mods:
             flags |= self.MK.get(m, 0)
-        lp = self._lparam_xy(cx, cy)
+        lp = self._lparam_xy(round(cx * k), round(cy * k))
         if kind == "move":
             self.user32.PostMessageW(child, self.WM_MOUSEMOVE, flags, lp)
             return
@@ -623,7 +666,13 @@ class WinBackend:
     def post_wheel(self, hwnd, pos, dx, dy):
         child, _cx, _cy = self._child_at(hwnd, *pos)
         ox, oy = self.client_origin(hwnd)
-        lp = self._lparam_xy(ox + pos[0], oy + pos[1])  # wheel messages use screen coordinates
+        pt = self.wt.POINT(ox + pos[0], oy + pos[1])  # wheel messages use screen coordinates
+        if self.shcore is not None and self._msg_scale(child) != 1.0:
+            try:
+                self.user32.PhysicalToLogicalPointForPerMonitorDPI(child, self.ct.byref(pt))
+            except Exception:
+                pass
+        lp = self._lparam_xy(pt.x, pt.y)
         for msg, amount in ((self.WM_MOUSEWHEEL, dy), (self.WM_MOUSEHWHEEL, dx)):
             if amount:
                 wp = (int(amount * 120) & 0xFFFF) << 16
