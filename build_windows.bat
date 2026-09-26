@@ -15,7 +15,18 @@ echo Building Clicker.exe ...
 python -m PyInstaller --noconfirm --clean Clicker.spec
 if errorlevel 1 goto fail
 echo.
-echo Done. Your app is at: %~dp0dist\Clicker.exe
+set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if exist "%ISCC%" (
+  for /f %%v in ('python -c "from clicker.model import APP_VERSION; print(APP_VERSION)"') do set VER=%%v
+  echo Building the installer...
+  "%ISCC%" /Q /DAppVersion=%VER% installer\clicker.iss
+  if errorlevel 1 goto fail
+  echo.
+  echo Done. The installer is at: %~dp0dist\Clicker-Setup.exe
+) else (
+  echo Done. Your app is at: %~dp0dist\Clicker\Clicker.exe
+  echo To also build Clicker-Setup.exe, install Inno Setup 6 from https://jrsoftware.org/isdl.php and run this again.
+)
 echo To read text from the screen (Read Text steps), also install Tesseract OCR:
 echo   https://github.com/UB-Mannheim/tesseract/wiki
 pause

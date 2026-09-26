@@ -2,12 +2,25 @@
 
 Auto clicker, macro recorder, screen-aware script runner and screen triggers for Windows and macOS.
 
-## Build the app (Windows)
+## Install (Windows)
+Download **Clicker-Setup.exe** from the
+[latest release](https://github.com/kjbinkley01-bot/t1/releases/latest/download/Clicker-Setup.exe) and run it.
+It installs for just you (no admin needed) with a Start menu entry and an uninstaller in Settings > Apps;
+choose "Install for all users" on its first page to put it in Program Files instead. Windows may show
+"Windows protected your PC" because the installer isn't code-signed yet: click **More info > Run anyway**.
+
+**Updates:** Clicker checks for a new version once a day (Settings > Check for updates). When there is one,
+an **Update** button appears at the top: it shows what's new, and **Install and restart** downloads the
+installer, checks it against the release's SHA-256 checksum, closes Clicker, updates it and opens it again.
+Your scripts, rules and settings are kept. **Skip this version** hides that version's notice.
+
+## Build the app yourself (Windows)
 1. Unzip this folder somewhere (for example Documents\Clicker).
 2. Close any running copy of Clicker.
 3. Double-click `build_windows.bat`. It installs the libraries, runs the tests, then builds.
    The first build takes a few minutes.
-4. Your app is `dist\Clicker.exe`.
+4. Your app is `dist\Clicker\Clicker.exe`. With [Inno Setup 6](https://jrsoftware.org/isdl.php) installed,
+   it also builds the installer, `dist\Clicker-Setup.exe`.
 
 To try it without building, double-click `run_from_source.bat`.
 
@@ -18,6 +31,13 @@ Clicker can find it.
 ## Build the app (macOS)
 Run `./build_mac.sh`, then grant `dist/Clicker.app` Accessibility, Input Monitoring and Screen Recording
 in System Settings > Privacy & Security. For Read Text: `brew install tesseract`.
+
+## What's new in 2.11
+* **Installer and one-click updates:** Clicker now comes as `Clicker-Setup.exe` (Start menu entry, uninstaller,
+  just you or everyone on the PC), and updates itself: **Update > Install and restart**.
+* **Screen triggers:** Run script file finds the script by path or by its Library name (with **Choose...** to
+  pick it), and with Pause running script on it runs while the running script waits, which then carries on.
+  Changes to a rule's outputs apply straight away.
 
 ## What's new in 2.10
 * **Library:** Open (or Ctrl+O) now shows your scripts and recordings as cards with a thumbnail (a script's
@@ -244,9 +264,11 @@ F9 start/stop recording, F10 start/stop playback, F11 pause/resume.
 All can be reassigned in the app.
 
 ## Releasing a new version
-1. Change `APP_VERSION` in `clicker/model.py` (for example to `2.2.0`) and commit.
-2. Push a tag with the same number: `git tag v2.2.0 && git push origin v2.2.0`.
-3. GitHub Actions runs the tests, builds the Windows and macOS apps and publishes a release. Every
-   installed copy of Clicker then sees the update within a day.
+1. Change `APP_VERSION` in `clicker/model.py` (for example to `2.12.0`) and commit.
+2. Push a tag with the same number: `git tag v2.12.0 && git push origin v2.12.0`.
+3. GitHub Actions runs the tests, builds `Clicker-Setup.exe`, a portable zip and the macOS disk image, and
+   publishes a release. Every installed copy of Clicker offers the update within a day (or at once with
+   Check for updates). To build everything without publishing, run the Release workflow by hand from the
+   Actions tab.
 
 See `SCRIPT_FORMAT.md` for the importable script format.

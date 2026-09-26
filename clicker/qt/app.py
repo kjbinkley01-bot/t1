@@ -7,7 +7,6 @@ import queue
 import sys
 import threading
 import traceback
-import webbrowser
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QRegion
@@ -391,6 +390,7 @@ class GlassApp(QMainWindow):
         self._poll_timer.timeout.connect(self._poll)
         self._poll_timer.start(30)
         QTimer.singleShot(2500, self.check_updates)
+        threading.Thread(target=updates.clean_downloads, daemon=True).start()
         QTimer.singleShot(400, self._warm_pages)
         QTimer.singleShot(700, self._offer_recovery)
         self._autosave_timer = QTimer(self)
@@ -1460,7 +1460,7 @@ class GlassApp(QMainWindow):
             if r.get("force"):
                 self.set_status(f"Could not check for updates: {r['error']}", error=True)
             return
-        if r.get("newer"):
+        if r.get("newer") and not r.get("skipped"):
             self.update_info = r
             self.btn_update.setText(f"Update {r['tag']}")
             self.btn_update.show()
@@ -1470,11 +1470,28 @@ class GlassApp(QMainWindow):
             self.set_status(f"Clicker {model.APP_VERSION} is up to date.")
 
     def open_update(self):
-        r = self.update_info
-        if r and QMessageBox.question(self, "Update available",
-                                      f"Clicker {r['tag']} is available (you have {model.APP_VERSION}).\n\n"
-                                      "Open the download page?") == QMessageBox.StandardButton.Yes:
-            webbrowser.open(r["url"])
+        if self.update_info:
+            from .update_dialog import show_update
+            show_update(self, self.update_info)
+
+    def install_update(self, installer, mode):
+        """Close Clicker (asking about unsaved work as usual), then run the downloaded installer."""
+        self._pending_update = (installer, mode)
+        self._quitting = True
+        self.close()
+        if not getattr(self, "_closed", False):
+            self.set_status("The update is downloaded; it installs when you quit Clicker.")
+            return
+        QApplication.quit()
+
+    def _run_pending_update(self):
+        pending = getattr(self, "_pending_update", None)
+        if not pending:
+            return
+        try:
+            updates.run_installer(*pending)
+        except Exception as e:
+            QMessageBox.warning(None, "Update", f"Could not start the installer: {e}\n\nIt is at {pending[0]}")
 
     # ------------------------------------------------------------ errors and recovery
 
@@ -1614,6 +1631,7 @@ class GlassApp(QMainWindow):
         self.save_rules()
         self.save_settings()
         e.accept()
+        self._run_pending_update()
 
 
 def main():

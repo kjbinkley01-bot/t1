@@ -1,4 +1,8 @@
-# PyInstaller build for Windows (one Clicker.exe) and macOS (Clicker.app): python -m PyInstaller Clicker.spec
+# PyInstaller build: python -m PyInstaller Clicker.spec
+#   Windows: dist/Clicker/ (Clicker.exe and its libraries), which installer/clicker.iss packs into
+#            Clicker-Setup.exe. A folder starts much faster than a one-file exe, which unpacks itself every launch.
+#   macOS:   dist/Clicker.app
+#   Linux:   dist/Clicker (one file)
 # It leaves out the parts of Qt and Python that Clicker never uses, which keeps the app small.
 import sys
 
@@ -34,6 +38,22 @@ def wanted(dest):
     return True
 
 
+if WIN:
+    import os
+    sys.path.insert(0, os.path.abspath("."))
+    from clicker.model import APP_VERSION
+    nums = (tuple(int(n) for n in APP_VERSION.split(".")[:3]) + (0, 0, 0))[:3] + (0,)
+    os.makedirs("build", exist_ok=True)
+    with open("build/version_info.txt", "w", encoding="utf-8") as f:
+        f.write(f"""VSVersionInfo(
+  ffi=FixedFileInfo(filevers={nums}, prodvers={nums}),
+  kids=[StringFileInfo([StringTable('040904B0', [
+    StringStruct('CompanyName', 'Clicker'), StringStruct('FileDescription', 'Clicker'),
+    StringStruct('FileVersion', '{APP_VERSION}'), StringStruct('ProductName', 'Clicker'),
+    StringStruct('ProductVersion', '{APP_VERSION}'), StringStruct('OriginalFilename', 'Clicker.exe')])]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])])
+""")
+
 a = Analysis(
     ["clicker_app.py"],
     datas=[("assets", "assets")],
@@ -51,6 +71,9 @@ if MAC:
               icon="assets/clicker.icns")
     coll = COLLECT(exe, a.binaries, a.datas, name="Clicker", upx=False)
     app = BUNDLE(coll, name="Clicker.app", icon="assets/clicker.icns", bundle_identifier="com.clicker.app")
+elif WIN:
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Clicker", console=False, upx=False,
+              icon="assets/clicker.ico", version="build/version_info.txt")
+    coll = COLLECT(exe, a.binaries, a.datas, name="Clicker", upx=False)
 else:
-    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="Clicker", console=False, upx=False,
-              icon="assets/clicker.ico" if WIN else None)
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="Clicker", console=False, upx=False)
