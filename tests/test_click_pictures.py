@@ -55,6 +55,35 @@ def test_recorder_attaches_pictures_to_presses():
     assert "img" not in down2
 
 
+def test_the_click_is_never_held_up_by_the_picture(monkeypatch):
+    """The click handler runs inside the system's mouse hook: the screen grab must happen elsewhere."""
+    monkeypatch.setattr(recorder, "PICTURE_STALE_S", 0.15)
+    screen = desk()
+    grabbed_on = []
+
+    def slow_capture(region):
+        grabbed_on.append(threading.current_thread().name)
+        time.sleep(0.3)  # like a 4K screen grab on a busy PC
+        return screen, (0, 0)
+    r = recorder.Recorder(lambda k: False)
+    r.opts = {"clicks": True, "moves": False, "keys": False, "pictures": True, "snapshots": False}
+    r.started = time.monotonic()
+    r._capture = slow_capture
+    r._jobs, r._stop, r.images = queue.Queue(), threading.Event(), {}
+    t = threading.Thread(target=r._picture_worker, name="pictures")
+    t.start()
+    left = SimpleNamespace(name="left")
+    t0 = time.monotonic()
+    r._on_click(220, 112, left, True)
+    r._on_click(220, 112, left, False)
+    assert time.monotonic() - t0 < 0.05                 # the hook returned straight away
+    r._on_click(220, 112, left, True)                   # queued behind a slow grab: too late, skipped
+    r._stop.set()
+    t.join(5)
+    assert grabbed_on == ["pictures"]
+    assert "img" in r.events[0] and "img" not in r.events[2]
+
+
 def ev(t, typ, **kw):
     return dict(t=t, type=typ, **kw)
 

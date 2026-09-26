@@ -60,6 +60,7 @@ PATCH_SIZES = [(48, 32), (72, 48), (110, 70), (160, 100), (240, 150)]
 UNIQUE_CONF = 0.93
 MIN_TEXTURE = 6.0
 SNAP_EVERY_S = 0.5
+PICTURE_STALE_S = 0.6   # a click picture taken later than this after the click could show the wrong thing
 SNAP_WIDTH = 480
 
 
@@ -159,12 +160,9 @@ class Recorder:
         ev = {"type": "mouse_down" if pressed else "mouse_up", "x": int(x), "y": int(y), "button": button.name}
         self._add(ev)
         if pressed and self.opts.get("pictures"):
-            # grab now, before the app reacts to the click; picking the picture happens on a worker
-            try:
-                img, origin = self._grab(None)
-                self._jobs.put((ev, img, origin))
-            except Exception:
-                pass
+            # Only note it here. This runs inside the system's mouse hook, and the click waits until it
+            # returns: grabbing the screen here (tens of milliseconds on a 4K screen) made apps miss clicks.
+            self._jobs.put((ev, time.monotonic()))
 
     def _picture_worker(self):
         from . import vision
@@ -172,10 +170,13 @@ class Recorder:
         try:
             while not (self._stop.is_set() and self._jobs.empty()):
                 try:
-                    ev, img, (ox, oy) = self._jobs.get(timeout=0.1)
+                    ev, when = self._jobs.get(timeout=0.1)
                 except queue.Empty:
                     continue
+                if time.monotonic() - when > PICTURE_STALE_S:
+                    continue  # fell behind (fast clicking): better no picture than one of the wrong screen
                 try:
+                    img, (ox, oy) = self._grab(None)
                     hit = pick_patch(img, ev["x"] - ox, ev["y"] - oy)
                 except Exception:
                     hit = None
