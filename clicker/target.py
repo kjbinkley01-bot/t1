@@ -376,6 +376,26 @@ def message_scale(awareness, window_dpi, monitor_dpi):
     return float(window_dpi) / float(monitor_dpi)
 
 
+def unstretch(img, k):
+    """Undo a window capture that came back at the window's own smaller size.
+
+    A window Windows stretches on a scaled display (see message_scale) draws itself at its unscaled size:
+    its picture lands in the top left k-th of the capture with black around it. Scaling that part back up
+    puts the capture in real screen pixels, like everything else. Left alone when it doesn't look like that.
+    """
+    import cv2
+    h, w = img.shape[:2]
+    if not 0.2 < k < 0.99 or h < 8 or w < 8:
+        return img
+    lw, lh = max(1, round(w * k)), max(1, round(h * k))
+    inside = img[:lh, :lw]
+    outside_right, outside_below = img[:, lw + 1:], img[lh + 1:, :lw]
+    parts = [a for a in (outside_right, outside_below) if a.size]
+    if not parts or max(float(a.mean()) for a in parts) > 4 or float(inside.std()) < 2:
+        return img
+    return cv2.resize(inside, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
 class WinBackend:
     """Win32 calls through ctypes. Only constructed on Windows."""
 
@@ -612,6 +632,7 @@ class WinBackend:
             buf = (ct.c_ubyte * (w * h * 4))()
             gdi32.GetDIBits(mdc, bmp, 0, h, ct.addressof(buf), ct.addressof(bih), 0)
             img = np.frombuffer(buf, np.uint8).reshape(h, w, 4)[:, :, :3].copy()
+            img = unstretch(img, self._msg_scale(hwnd))
         finally:
             gdi32.DeleteObject(bmp)
             gdi32.DeleteDC(mdc)

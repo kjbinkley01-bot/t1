@@ -191,3 +191,20 @@ def test_message_scale_for_windows_that_windows_stretches():
     assert message_scale(1, 144, 192) == 0.75         # system aware app on a 200% second monitor
     assert message_scale(2, 144, 144) == 1.0          # per monitor aware: real pixels already
     assert message_scale(0, 0, 144) == 1.0            # unknown: leave positions alone
+
+
+def test_unstretch_scales_a_window_that_drew_itself_small_back_up():
+    import numpy as np
+    from clicker.target import unstretch
+    real = np.zeros((300, 600, 3), np.uint8)
+    real[150:210, 300:420] = (0, 200, 0)                      # a button in real pixels
+    small = np.zeros_like(real)                               # what the capture returns: 2/3 size, top left
+    small[:200, :400] = __import__("cv2").resize(real, (400, 200), interpolation=0)
+    fixed = unstretch(small, 2 / 3)
+    assert fixed.shape == real.shape
+    assert fixed[180, 360].tolist() == [0, 200, 0] and fixed[100, 100].tolist() == [0, 0, 0]
+    ys, xs = np.nonzero(fixed[..., 1] > 100)
+    assert abs(xs.min() - 300) <= 2 and abs(ys.min() - 150) <= 2   # back where it really is
+    full = np.full((300, 600, 3), 90, np.uint8)               # a window that drew at full size: untouched
+    assert unstretch(full, 2 / 3) is full
+    assert unstretch(small, 1.0) is small
