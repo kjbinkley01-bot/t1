@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QGridLayout, QHBo
 from .. import library, model, storage, target, vision
 from ..recorder import Player, Recorder, recording_to_steps, to_window
 from ..storage import AssetStore
-from . import dialogs
+from . import dialogs, glass
 from .glass import GlassPanel, font
 from .rec_timeline import RecordingEditor
 from .runin import RunInButton
@@ -95,45 +95,47 @@ class RecorderTab(QWidget):
         bl.addWidget(self.btn_runin)
         root.addWidget(bar)
 
-        # record / play
+        # record (left) and play back (right) in one panel; the recording editor gets the rest
         p = GlassPanel(radius=30)
         g = QGridLayout(p)
-        g.setContentsMargins(26, 22, 26, 20)
-        g.setHorizontalSpacing(16)
-        g.setVerticalSpacing(14)
+        g.setContentsMargins(26, 20, 26, 18)
+        g.setHorizontalSpacing(24)
+        g.setVerticalSpacing(12)
         self.btn_rec = GlassButton("Start Recording", icon="record", kind="record")
-        self.btn_rec.setMinimumHeight(48)
+        self.btn_rec.setMinimumHeight(44)
         self.btn_rec.clicked.connect(lambda: self.toggle_record())
         self.btn_rec_stop = GlassButton("Stop Recording", icon="stop")
+        self.btn_rec_stop.setMinimumHeight(44)
         self.btn_rec_stop.clicked.connect(lambda: self.stop_record())
+        rec_row = QHBoxLayout()
+        rec_row.setSpacing(10)
+        rec_row.addWidget(self.btn_rec, 1)
+        rec_row.addWidget(self.btn_rec_stop, 1)
+        g.addLayout(rec_row, 0, 0)
+        self.btn_play = GlassButton("Play Recording", icon="play", kind="primary")
+        self.btn_play.setMinimumHeight(44)
+        self.btn_play.clicked.connect(self.toggle_play)
+        play_row = QHBoxLayout()
+        play_row.setSpacing(10)
+        play_row.addWidget(self.btn_play, 1)
         stats = QHBoxLayout()
         self.st_events, self.st_len = Stat("events"), Stat("length")
         stats.addWidget(self.st_events)
         stats.addWidget(self.st_len)
-        g.addWidget(self.btn_rec, 0, 0)
-        g.addWidget(self.btn_rec_stop, 0, 1)
-        g.addLayout(stats, 0, 2)
+        play_row.addLayout(stats)
+        g.addLayout(play_row, 0, 1)
         self.lbl_note = detail("Click Start Recording (or press the record hotkey), do the task, "
                                "then press the hotkey again to stop.")
         self.lbl_note.setWordWrap(True)
-        g.addWidget(self.lbl_note, 1, 0, 1, 3)
-        self.btn_play = GlassButton("Play Recording", icon="play", kind="primary")
-        self.btn_play.clicked.connect(self.toggle_play)
-        g.addWidget(self.btn_play, 2, 0)
-        rp = QHBoxLayout()
-        rp.setSpacing(8)
-        self.e_repeat = num_field(o.get("repeat", 1), 56)
-        rp.addWidget(QLabel("Repeat"))
-        rp.addWidget(self.e_repeat)
-        rp.addWidget(detail("0 = loop"))
-        rp.addStretch(1)
-        g.addLayout(rp, 2, 1)
-        opts = QVBoxLayout()
-        opts.setSpacing(6)
-        self.sw_clicks = GlassSwitch("Record mouse clicks and scrolls")
-        self.sw_moves = GlassSwitch("Record mouse movement")
-        self.sw_keys = GlassSwitch("Record keyboard")
-        self.sw_pics = GlassSwitch("Save a picture at each click")
+        g.addWidget(self.lbl_note, 1, 0, 1, 2)
+
+        rec = QVBoxLayout()
+        rec.setSpacing(6)
+        rec.addWidget(Caption("Record"))
+        self.sw_clicks = GlassSwitch("Mouse clicks and scrolls")
+        self.sw_moves = GlassSwitch("Mouse movement")
+        self.sw_keys = GlassSwitch("Keyboard")
+        self.sw_pics = GlassSwitch("A picture at each click")
         self.sw_pics.setToolTip("Lets Convert make Click Image steps, and playback find clicks that moved")
         self.sw_snaps = GlassSwitch("Screen snapshots for the timeline")
         self.sw_snaps.setToolTip("A small screenshot every half second, shown on the timeline (about 4 MB a minute)")
@@ -141,76 +143,97 @@ class RecorderTab(QWidget):
                                  (self.sw_keys, "keys", True), (self.sw_pics, "pictures", True),
                                  (self.sw_snaps, "snapshots", False)):
             sw.setChecked(bool(o.get(key, default)))
-            opts.addWidget(sw)
-        g.addLayout(opts, 2, 2)
-        for c in range(3):
-            g.setColumnStretch(c, 1)
-        root.addWidget(p)
+            rec.addWidget(sw)
+        rec.addStretch(1)
+        g.addLayout(rec, 2, 0, Qt.AlignmentFlag.AlignTop)
 
-        self.editor = RecordingEditor(self)
-        root.addWidget(self.editor)
-
-        # variation
-        p = GlassPanel(radius=30)
-        vl = QVBoxLayout(p)
-        vl.setContentsMargins(26, 20, 26, 20)
-        vl.setSpacing(12)
-        vl.addWidget(Caption("Playback variation"))
+        play = QVBoxLayout()
+        play.setSpacing(8)
+        play.addWidget(Caption("Play back"))
+        self.e_repeat = num_field(o.get("repeat", 1), 56)
         self.e_smin, self.e_smax = num_field(o.get("speed_min", 100)), num_field(o.get("speed_max", 100))
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for w in (QLabel("Repeat"), self.e_repeat, detail("times (0 = loop)"), QLabel("   Speed"), self.e_smin,
+                  detail("to"), self.e_smax, detail("%")):
+            row.addWidget(w)
+        row.addStretch(1)
+        play.addLayout(row)
+        self.sw_settle = GlassSwitch("Wait for the screen to settle before each click (max 10 s)")
+        self.sw_settle.setChecked(bool(o.get("settle", False)))
+        play.addWidget(self.sw_settle)
+        self.sw_follow = GlassSwitch("Find each click by its picture, so moved windows and buttons still work")
+        self.sw_follow.setChecked(bool(o.get("follow", False)))
+        play.addWidget(self.sw_follow)
+
+        # less used: behind a disclosure that slides open
+        self.btn_more = GlassButton("More playback options", icon="caret-down", small=True,
+                                    tip="Wait between repeats, and shift the mouse a little each playback")
+        self.btn_more.clicked.connect(self._toggle_more)
+        play.addWidget(self.btn_more, 0, Qt.AlignmentFlag.AlignLeft)
+        self.more = QWidget()
+        ml = QVBoxLayout(self.more)
+        ml.setContentsMargins(0, 2, 0, 0)
+        ml.setSpacing(8)
         self.e_gmin, self.e_gmax = num_field(o.get("gap_min", 0)), num_field(o.get("gap_max", 0))
         self.cb_gunit = QComboBox()
         self.cb_gunit.addItems(["seconds", "minutes"])
         self.cb_gunit.setCurrentText(o.get("gap_unit", "seconds"))
-        for label_text, a, mid, b, tail in (("Random playback speed between", self.e_smin, "and", self.e_smax, "%"),
-                                            ("Random delay between playbacks", self.e_gmin, "to", self.e_gmax, None)):
-            r = QHBoxLayout()
-            r.setSpacing(8)
-            lab = QLabel(label_text)
-            lab.setFixedWidth(250)
-            r.addWidget(lab)
-            r.addWidget(a)
-            r.addWidget(detail(mid))
-            r.addWidget(b)
-            r.addWidget(detail(tail) if tail else self.cb_gunit)
-            r.addStretch(1)
-            vl.addLayout(r)
-        dev = QHBoxLayout()
-        dev.setSpacing(14)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        for w in (QLabel("Wait between repeats"), self.e_gmin, detail("to"), self.e_gmax, self.cb_gunit):
+            row.addWidget(w)
+        row.addStretch(1)
+        ml.addLayout(row)
         self.dev = {}
-        for axis, title in (("dx", "Horizontal mouse deviation"), ("dy", "Vertical mouse deviation")):
-            box = GlassPanel(radius=22)
-            bl2 = QVBoxLayout(box)
-            bl2.setContentsMargins(18, 14, 18, 14)
-            bl2.setSpacing(8)
-            t = QLabel(title)
-            t.setFont(font(10, QFont.Weight.DemiBold))
-            bl2.addWidget(t)
-            r = QHBoxLayout()
-            r.setSpacing(8)
+        for axis, title in (("dx", "Shift clicks sideways"), ("dy", "Shift clicks up/down")):
+            row = QHBoxLayout()
+            row.setSpacing(8)
             emin, emax = num_field(o.get(f"{axis}_min", 0), 56), num_field(o.get(f"{axis}_max", 0), 56)
-            for w in (QLabel("Min"), emin, QLabel("Max"), emax, detail("px")):
-                r.addWidget(w)
-            r.addStretch(1)
-            bl2.addLayout(r)
-            whole = GlassSwitch("Same offset for the whole playback")
+            whole = GlassSwitch("same for the whole playback")
             whole.setChecked(bool(o.get(f"{axis}_whole", True)))
-            bl2.addWidget(whole)
+            for w in (QLabel(title), emin, detail("to"), emax, detail("px"), whole):
+                row.addWidget(w)
+            row.addStretch(1)
+            ml.addLayout(row)
             self.dev[axis] = (emin, emax, whole)
-            dev.addWidget(box)
-        vl.addLayout(dev)
-        self.sw_settle = GlassSwitch("Wait for the screen to settle before each recorded click (max 10 s)")
-        self.sw_settle.setChecked(bool(o.get("settle", False)))
-        vl.addWidget(self.sw_settle)
-        self.sw_follow = GlassSwitch("Find each click by its picture, so moved windows and buttons still work")
-        self.sw_follow.setChecked(bool(o.get("follow", False)))
-        vl.addWidget(self.sw_follow)
+        play.addWidget(self.more)
+        self._more_open = bool(o.get("more_open", False)) or any(
+            float(o.get(k, 0) or 0) for k in ("gap_min", "gap_max", "dx_min", "dx_max", "dy_min", "dy_max"))
+        self.more.setVisible(self._more_open)
+        self.btn_more.set_kind("on" if self._more_open else "glass")
+        g.addLayout(play, 2, 1, Qt.AlignmentFlag.AlignTop)
+        g.setColumnStretch(0, 2)
+        g.setColumnStretch(1, 3)
         root.addWidget(p)
+
+        self.editor = RecordingEditor(self)
+        root.addWidget(self.editor)
 
         tip = detail("Shortcut keys for recording and playback are in Settings (the gear icon).")
         root.addWidget(tip)
         root.addStretch(1)
 
     # ------------------------------------------------------------ state
+
+    def _toggle_more(self):
+        """Slide the extra playback options open or closed."""
+        self._more_open = not self._more_open
+        self.btn_more.set_kind("on" if self._more_open else "glass")
+        full = self.more.sizeHint().height()
+        if not glass.motion_on() or not self.isVisible():
+            self.more.setVisible(self._more_open)
+            return
+        self.more.setMaximumHeight(0 if self._more_open else full)
+        self.more.setVisible(True)
+        opening = self._more_open
+
+        def done():
+            self.more.setMaximumHeight(16777215)
+            self.more.setVisible(opening)
+        glass.animate(self, self.more.maximumHeight(), full if opening else 0, glass.BASE,
+                      lambda v: self.more.setMaximumHeight(round(v)), curve=glass.GLIDE, attr="_more_anim",
+                      done=done)
 
     def _read_options(self):
         def num(edit, name, lo=None):
@@ -234,7 +257,7 @@ class RecorderTab(QWidget):
             "dx_min": num(hmin, "Deviation"), "dx_max": num(hmax, "Deviation"),
             "dy_min": num(vmin, "Deviation"), "dy_max": num(vmax, "Deviation"),
             "dx_whole": hwhole.isChecked(), "dy_whole": vwhole.isChecked(),
-            "settle": self.sw_settle.isChecked(),
+            "settle": self.sw_settle.isChecked(), "more_open": self._more_open,
         }
         self.main.settings["recorder"] = o
         self.main.save_settings()

@@ -38,8 +38,24 @@ class RemoteDialog(dialogs.GlassDialog):
         row.addWidget(b)
         self.body.addLayout(row)
         self.body.addWidget(detail("Anyone who knows the topic can send commands, so keep it long and random and "
-                                   "don't use your alerts topic. In the ntfy app tap +, subscribe to this topic, "
-                                   "then send messages from it."))
+                                   "don't use your alerts topic."))
+        self.body.addWidget(Caption("How to send a command from your phone"))
+        self.body.addWidget(detail("1. Open the page below in your phone's browser (bookmark it or add it to your "
+                                   "home screen).  2. Type a command, like status or start mining, in the message "
+                                   "box at the bottom of the page and send it.  3. Clicker answers on the same "
+                                   "page. (Subscribing to the topic in the ntfy app as well makes the answers pop "
+                                   "up as notifications.)"))
+        lrow = QHBoxLayout()
+        self.lbl_link = QLabel("")
+        self.lbl_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lrow.addWidget(self.lbl_link, 1)
+        for text, fn in (("Copy link", self._copy_link), ("Open", self._open_link)):
+            b = GlassButton(text, small=True)
+            b.clicked.connect(fn)
+            lrow.addWidget(b)
+        self.body.addLayout(lrow)
+        self.e_topic.textChanged.connect(self._show_link)
+        self._show_link()
         prow = QHBoxLayout()
         prow.addWidget(QLabel("PIN (optional)"))
         self.e_pin = QLineEdit(cfg.get("pin", ""))
@@ -88,6 +104,26 @@ class RemoteDialog(dialogs.GlassDialog):
         test.clicked.connect(self._test)
         self.body.addWidget(test, 0, Qt.AlignmentFlag.AlignLeft)
         self.add_buttons("Save")
+
+    def _link(self):
+        from ..alerts import ntfy_url
+        topic = self.e_topic.text().strip()
+        return ntfy_url(topic) if topic else ""
+
+    def _show_link(self, *_):
+        link = self._link()
+        self.lbl_link.setText(link or "Make up a topic first; its page address shows here.")
+
+    def _copy_link(self):
+        if self._link():
+            from PySide6.QtWidgets import QApplication
+            QApplication.clipboard().setText(self._link())
+            self.msg.setText("Link copied. Send it to your phone (email, chat...) and open it there.")
+
+    def _open_link(self):
+        if self._link():
+            import webbrowser
+            webbrowser.open(self._link())
 
     def _add_item(self, path):
         it = QListWidgetItem(f"{os.path.splitext(os.path.basename(path))[0]}    ·    {path}")
