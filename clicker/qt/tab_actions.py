@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QStyledItemDelegate, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from .. import editing, flow, formlogic, inputs, library, model, runlog, storage, target, vision
+from .. import editing, flow, formlogic, glide, inputs, library, model, runlog, storage, target, vision
 from ..runner import Runner
 from ..storage import AssetStore
 from . import dialogs, glass, motion
@@ -469,6 +469,21 @@ class ActionTab(QWidget):
             hr.addWidget(w)
         hr.addStretch(1)
         wl.addLayout(hr)
+        gr = QHBoxLayout()
+        gr.setSpacing(6)
+        self.e_glide = field(56)
+        self.e_glide.setText("0")
+        self.e_glide.setToolTip("Slide the mouse to each spot over this many milliseconds instead of jumping "
+                                "there. 0 jumps; up to 5000.")
+        self.sw_glide_curve = GlassSwitch("curved")
+        self.sw_glide_curve.setToolTip("Bow each slide out a little to one side instead of a straight line.")
+        self.sw_glide_curve.toggled.connect(lambda _on: self._settings_changed())
+        lab = QLabel("Mouse glide")
+        lab.setFixedWidth(92)
+        for w in (lab, self.e_glide, detail_label("ms  "), self.sw_glide_curve):
+            gr.addWidget(w)
+        gr.addStretch(1)
+        wl.addLayout(gr)
         self.sw_scale = GlassSwitch("Find images at other display scales")
         self.sw_scale.toggled.connect(lambda _on: self._settings_changed())
         wl.addWidget(self.sw_scale)
@@ -816,6 +831,8 @@ class ActionTab(QWidget):
         self._update_undo()
 
     def _settings_changed(self):
+        if getattr(self, "_loading", False):
+            return  # set_script filling in the fields, not the user changing them
         self.dirty = True
         self.sync_settings()
         self.main.update_title()
@@ -1416,6 +1433,11 @@ class ActionTab(QWidget):
         except ValueError:
             pass
         st["scale_search"] = self.sw_scale.isChecked()
+        try:
+            st["glide_ms"] = min(max(0, int(self.e_glide.text() or 0)), glide.MAX_MS)
+        except ValueError:
+            pass
+        st["glide_curve"] = self.sw_glide_curve.isChecked()
 
     def _save_hide(self, on):
         self.main.settings["hide_while_running"] = bool(on)
@@ -1448,7 +1470,13 @@ class ActionTab(QWidget):
         self.e_rand.setText(str(st.get("random_delay_ms", 0)))
         self.e_handler.setText(str(self.script.get("error_handler") or ""))
         self.e_restart.setText(str(st.get("restart_on_failure", 0)))
-        self.sw_scale.setChecked(bool(st.get("scale_search", False)))
+        self._loading = True
+        try:
+            self.sw_scale.setChecked(bool(st.get("scale_search", False)))
+            self.e_glide.setText(str(st.get("glide_ms", 0)))
+            self.sw_glide_curve.setChecked(bool(st.get("glide_curve", False)))
+        finally:
+            self._loading = False
         self._show_target()
         self.running_row = None
         self.history.clear()

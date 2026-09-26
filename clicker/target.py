@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 
+from . import glide
 from .inputs_names import canonical, split_combo
 
 METHODS = [("messages", "Background messages (your mouse stays free)"),
@@ -186,12 +187,12 @@ class WindowIO:
         if self.target["method"] == "messages":
             self.b.post_mouse(self.attach(), "move", self.cursor, None, self._mods())
 
-    def smooth_move(self, x, y, duration=0.12, steps=12):
+    def smooth_move(self, x, y, duration=0.12, curve=False):
         sx, sy = self.cursor
-        for i in range(1, steps + 1):
-            t = i / steps
-            self.move_to(int(sx + (x - sx) * t), int(sy + (y - sy) * t))
-            time.sleep(duration / steps)
+        pts = glide.points(sx, sy, x, y, duration, curve)
+        for p in pts:
+            self.move_to(*p)
+            time.sleep(duration / len(pts))
 
     def move_by(self, dx, dy):
         self.move_to(self.cursor[0] + int(dx), self.cursor[1] + int(dy))

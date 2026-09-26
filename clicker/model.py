@@ -310,7 +310,7 @@ def new_script(name="Untitled"):
         "description": "",
         "screen": None,
         "settings": {"repeat": 1, "speed": 1.0, "random_delay_ms": 0,
-                     "restart_on_failure": 0, "scale_search": False},
+                     "restart_on_failure": 0, "scale_search": False, "glide_ms": 0, "glide_curve": False},
         "inputs": [],
         "error_handler": None,
         "steps": [],

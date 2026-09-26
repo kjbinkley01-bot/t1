@@ -1,6 +1,7 @@
 """Background jobs: the action script runner and the shared pause/stop plumbing."""
 
 import datetime
+import math
 import operator
 import os
 import random
@@ -12,7 +13,7 @@ import threading
 import time
 import webbrowser
 
-from . import clipboard, datafile, expr, history, inputs, model, runlog, storage, target, vision
+from . import clipboard, datafile, expr, glide, history, inputs, model, runlog, storage, target, vision
 
 
 PROGRESS_MIN_S = 0.15  # shorter pauses would only flicker a progress bar
@@ -294,8 +295,18 @@ class Runner(Job):
         st = self.script.get("settings") or {}
         self.restarts = max(0, int(st.get("restart_on_failure") or 0))
         self.restart_delay = max(0.0, float(st.get("restart_delay_s", 3) or 0))
+        # glide: slide the cursor to each spot over this long instead of jumping (0 = jump)
+        self.glide_s = min(max(0, int(st.get("glide_ms") or 0)), glide.MAX_MS) / 1000.0
+        self.glide_curve = bool(st.get("glide_curve"))
 
     # ------------------------------------------------------------ helpers
+
+    def _move(self, x, y):
+        """Put the cursor on (x, y): a slide when Mouse glide is on, else a jump."""
+        if self.glide_s:
+            self.io.smooth_move(x, y, min(self.glide_s / self.speed, glide.MAX_MS / 1000.0), self.glide_curve)
+        else:
+            self.io.move_to(x, y)
 
     def log(self, msg):
         self.emit("log", msg)
@@ -890,7 +901,7 @@ class Runner(Job):
                     self._highlight((x - 8, y - 8, 17, 17))
                 return NEXT
             if has_xy:
-                self.io.move_to(x, y)
+                self._move(x, y)
                 time.sleep(0.01)
             self.io.click(button, count, mods)
             return NEXT
@@ -900,11 +911,14 @@ class Runner(Job):
             if dry:
                 return NEXT
             if begin:
-                self.io.move_to(x, y)
+                self._move(x, y)
                 time.sleep(0.02)
                 self.held_buttons.append(self.io.press_button(button))
             else:
-                self.io.smooth_move(x, y)
+                if self.glide_s:
+                    self._move(x, y)
+                else:
+                    self.io.smooth_move(x, y)  # drags always slide a little, so apps see the motion
                 time.sleep(0.02)
                 b = self.io.get_button(button)
                 self.io.release_button(b)
@@ -917,21 +931,32 @@ class Runner(Job):
             amount = max(1, int(step.get("amount") or 1))
             if not dry:
                 if has_xy:
-                    self.io.move_to(x, y)
+                    self._move(x, y)
                     time.sleep(0.01)
                 self.io.scroll(dx * amount, dy * amount)
             return NEXT
 
         if a == "Move Mouse":
             if not dry:
-                self.io.move_to(x, y)
+                self._move(x, y)
             return NEXT
         if a == "Move Mouse by Offset":
-            if not dry:
+            if dry:
+                pass
+            elif self.glide_s:
+                px, py = self.io.position()
+                self._move(px + int(x or 0), py + int(y or 0))
+            else:
                 self.io.move_by(x or 0, y or 0)
             return NEXT
         if a == "Move Mouse by Angle":
-            if not dry:
+            if dry:
+                pass
+            elif self.glide_s:
+                px, py = self.io.position()
+                rad, d = math.radians(float(x or 0)), float(y or 0)
+                self._move(px + math.cos(rad) * d, py - math.sin(rad) * d)
+            else:
                 self.io.move_by_angle(x or 0, y or 0)
             return NEXT
         if a == "Save Cursor Location":
@@ -939,7 +964,7 @@ class Runner(Job):
             return NEXT
         if a == "Restore Cursor Location":
             if self.saved_pos and not dry:
-                self.io.move_to(*self.saved_pos)
+                self._move(*self.saved_pos)
             return NEXT
 
         if a == "Type Text":
@@ -1028,7 +1053,7 @@ class Runner(Job):
                 if dry:
                     self.log(f"{tag}: found at {tx}, {ty} ({int(m.score * 100)}%), not clicked")
                     return NEXT
-                self.io.move_to(tx, ty)
+                self._move(tx, ty)
                 time.sleep(0.02)
                 btn = step.get("button") or "left"
                 if btn == "double":

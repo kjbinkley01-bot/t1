@@ -23,7 +23,8 @@ You can also paste the JSON straight into **Import Script > Paste script text**.
   "description": "Export yesterday's orders from the portal",
   "screen": {"width": 1920, "height": 1080, "scale": 100},
   "settings": {"repeat": 1, "speed": 1.0, "random_delay_ms": 0,
-               "restart_on_failure": 0, "restart_delay_s": 3, "scale_search": false},
+               "restart_on_failure": 0, "restart_delay_s": 3, "scale_search": false,
+               "glide_ms": 0, "glide_curve": false},
   "inputs": [
     {"name": "report_date", "label": "Report date", "default": "{yesterday}"}
   ],
@@ -42,6 +43,11 @@ You can also paste the JSON straight into **Import Script > Paste script text**.
 * `settings.scale_search`: also look for images at other sizes (0.67x to 1.5x). Slower; use it when the
   script must work on screens with different display scaling. Without it Clicker still resizes images
   automatically when `screen.scale` differs from the current display scaling.
+* `settings.glide_ms`: slide the mouse to each position over this many milliseconds (eased in and out, up
+  to 5000) instead of jumping there. 0 jumps. It applies to clicks with a position, Click Image, drags,
+  scrolls at a position, Move Mouse (including by offset and by angle) and Restore Cursor Location, and runs
+  faster or slower with `speed`. `settings.glide_curve`: bow each slide out a little to one side instead
+  of a straight line (the same way every time).
 * `settings.target` (optional, Windows): run inside one window instead of on the whole screen, e.g.
   `{"title": "Notepad", "process": "notepad.exe", "method": "messages", "restore_minimized": true,
   "focus_messages": true}`. `title` matches part of the window title (either field may be blank, not both);
