@@ -9,6 +9,7 @@ from pynput import keyboard, mouse
 from pynput.keyboard import Key, KeyCode
 from pynput.mouse import Button
 
+from . import glide
 from .inputs_names import canonical, split_combo
 
 mouse_ctl = mouse.Controller()
@@ -98,12 +99,12 @@ def move_to(x, y):
     mouse_ctl.position = (int(x), int(y))
 
 
-def smooth_move(x, y, duration=0.12, steps=12):
+def smooth_move(x, y, duration=0.12, curve=False):
     sx, sy = position()
-    for i in range(1, steps + 1):
-        t = i / steps
-        mouse_ctl.position = (int(sx + (x - sx) * t), int(sy + (y - sy) * t))
-        time.sleep(duration / steps)
+    pts = glide.points(sx, sy, x, y, duration, curve)
+    for p in pts:
+        mouse_ctl.position = p
+        time.sleep(duration / len(pts))
 
 
 def move_by(dx, dy):

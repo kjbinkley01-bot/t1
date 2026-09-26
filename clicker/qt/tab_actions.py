@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFile
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import editing, formlogic, inputs, model, runlog, storage, target, vision
+from .. import editing, formlogic, glide, inputs, model, runlog, storage, target, vision
 from ..runner import Runner
 from ..storage import AssetStore
 from . import dialogs
@@ -316,6 +316,21 @@ class ActionTab(QWidget):
             hr.addWidget(w)
         hr.addStretch(1)
         wl.addLayout(hr)
+        gr = QHBoxLayout()
+        gr.setSpacing(6)
+        self.e_glide = field(56)
+        self.e_glide.setText("0")
+        self.e_glide.setToolTip("Slide the mouse to each spot over this many milliseconds instead of jumping. "
+                                f"0 jumps. Up to {glide.MAX_MS}.")
+        self.sw_curve = GlassSwitch("curved")
+        self.sw_curve.setToolTip("Bend each slide a little to one side, like a hand moving the mouse.")
+        self.sw_curve.toggled.connect(lambda _on: self._settings_changed())
+        lab = QLabel("Mouse glide")
+        lab.setFixedWidth(92)
+        for w in (lab, self.e_glide, detail_label("ms  "), self.sw_curve):
+            gr.addWidget(w)
+        gr.addStretch(1)
+        wl.addLayout(gr)
         self.sw_scale = GlassSwitch("Find images at other display scales")
         self.sw_scale.toggled.connect(lambda _on: self._settings_changed())
         wl.addWidget(self.sw_scale)
@@ -964,6 +979,11 @@ class ActionTab(QWidget):
         except ValueError:
             pass
         st["scale_search"] = self.sw_scale.isChecked()
+        try:
+            st["glide_ms"] = min(max(0, int(self.e_glide.text() or 0)), glide.MAX_MS)
+        except ValueError:
+            pass
+        st["glide_curve"] = self.sw_curve.isChecked()
 
     def _save_hide(self, on):
         self.main.settings["hide_while_running"] = bool(on)
@@ -997,6 +1017,8 @@ class ActionTab(QWidget):
         self.e_handler.setText(str(self.script.get("error_handler") or ""))
         self.e_restart.setText(str(st.get("restart_on_failure", 0)))
         self.sw_scale.setChecked(bool(st.get("scale_search", False)))
+        self.e_glide.setText(str(st.get("glide_ms", 0)))
+        self.sw_curve.setChecked(bool(st.get("glide_curve", False)))
         self._show_target()
         self.running_row = None
         self.history.clear()

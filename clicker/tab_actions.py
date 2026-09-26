@@ -6,7 +6,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from . import editing, inputs, model, runlog, storage, ui, vision
+from . import editing, glide, inputs, model, runlog, storage, ui, vision
 from .runner import Runner
 from .storage import AssetStore
 from .theme import (C, F, Button, cap, check, combo, entry, frame, label, panel,
@@ -43,6 +43,7 @@ class ActionTab(tk.Frame):
         self.v_wait_goto, self.v_handler, self.v_retries = sv(), sv(), sv(str(model.DEFAULT_RETRIES))
         self.v_restart = sv("0")
         self.v_scale_search = tk.BooleanVar(value=False)
+        self.v_glide, self.v_glide_curve = sv("0"), tk.BooleanVar(value=False)
         self.v_script_repeat, self.v_speed, self.v_rand = sv("1"), sv("1.0x"), sv("0")
         self.v_hide = tk.BooleanVar(value=bool(app.settings.get("hide_while_running", False)))
 
@@ -195,6 +196,13 @@ class ActionTab(tk.Frame):
         entry(r, self.v_handler, 10, mono=True).pack(side="left")
         self._lbl(r, "Restarts").pack(side="left", padx=(14, 6))
         entry(r, self.v_restart, 4, mono=True).pack(side="left")
+
+        r = self._row(inner)
+        self._lbl(r, "Mouse glide", 11).pack(side="left")
+        entry(r, self.v_glide, 5, mono=True).pack(side="left")
+        self._lbl(r, "ms").pack(side="left", padx=(6, 14))
+        check(r, "Curved", self.v_glide_curve, command=lambda: self._changed_settings(),
+              bg=C["panel"]).pack(side="left")
 
         r = self._row(inner)
         check(r, "Find images at other display scales (slower)", self.v_scale_search,
@@ -817,6 +825,11 @@ class ActionTab(tk.Frame):
         except ValueError:
             pass
         self.script["settings"]["scale_search"] = bool(self.v_scale_search.get())
+        try:
+            self.script["settings"]["glide_ms"] = min(max(0, int(self.v_glide.get() or 0)), glide.MAX_MS)
+        except ValueError:
+            pass
+        self.script["settings"]["glide_curve"] = bool(self.v_glide_curve.get())
 
     def _save_hide(self):
         self.app.settings["hide_while_running"] = bool(self.v_hide.get())
@@ -845,6 +858,8 @@ class ActionTab(tk.Frame):
         self.v_handler.set(str(self.script.get("error_handler") or ""))
         self.v_restart.set(str(st.get("restart_on_failure", 0)))
         self.v_scale_search.set(bool(st.get("scale_search", False)))
+        self.v_glide.set(str(st.get("glide_ms", 0)))
+        self.v_glide_curve.set(bool(st.get("glide_curve", False)))
         self.running_row = None
         self.history.clear()
         self._update_undo_buttons()

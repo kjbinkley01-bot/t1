@@ -34,7 +34,8 @@ class FakeInputs(types.ModuleType):
         self.pos = (int(x), int(y))
         self._rec("move", int(x), int(y))
 
-    def smooth_move(self, x, y, *a, **k):
+    def smooth_move(self, x, y, duration=0.12, curve=False):
+        self._rec("glide", int(x), int(y), duration, curve)
         self.move_to(x, y)
 
     def move_by(self, dx, dy):
