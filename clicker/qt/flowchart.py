@@ -105,9 +105,9 @@ class StepBox(QGraphicsObject):
         self._press = e.scenePos()
         self._start_y = self.y()
         self.setZValue(10)
-        self.chart.select_from_chart(self.i)
         if not self._linking:
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        self.chart.select_from_chart(self.i)  # last: nothing of this box is touched after it
 
     def mouseMoveEvent(self, e):
         if self._press is None:

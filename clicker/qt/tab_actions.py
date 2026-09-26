@@ -1184,16 +1184,7 @@ class ActionTab(QWidget):
                 item.setIcon(2, step_icon(self.assets, steps[i], 34, 20, self.devicePixelRatioF())
                              if steps[i]["action"] in model.IMAGE_ACTIONS else QIcon())
         self._rows = rows
-        tree.clearSelection()
-        if select is not None:
-            want = [select] if isinstance(select, int) else list(select)
-            want = [i for i in want if 0 <= i < len(steps)]
-            for i in want:
-                tree.topLevelItem(i).setSelected(True)
-            if want:
-                motion.smoothly(tree, lambda: tree.scrollToItem(tree.topLevelItem(want[-1])))
-                tree.setCurrentItem(tree.topLevelItem(want[0]), 0,
-                                    tree.selectionModel().SelectionFlag.NoUpdate)
+        self._select_rows(select)
         tree.blockSignals(False)
         n = len(steps)
         scr = self.script.get("screen")
@@ -1228,10 +1219,29 @@ class ActionTab(QWidget):
             self.cb_action.setFocus()
         self.main.set_status(f"{action}: fill in the fields, then Add (or Insert Above).")
 
+    def _select_rows(self, select):
+        """Select rows (an index or a list), scrolling the last into view. Nothing is rebuilt."""
+        tree = self.tree
+        tree.clearSelection()
+        if select is None:
+            return
+        want = [select] if isinstance(select, int) else list(select)
+        want = [i for i in want if 0 <= i < tree.topLevelItemCount()]
+        for i in want:
+            tree.topLevelItem(i).setSelected(True)
+        if want:
+            motion.smoothly(tree, lambda: tree.scrollToItem(tree.topLevelItem(want[-1])))
+            tree.setCurrentItem(tree.topLevelItem(want[0]), 0, tree.selectionModel().SelectionFlag.NoUpdate)
+
     def select_step(self, i):
-        """Select step i (0-based), scroll to it and load it into the editor."""
+        """Select step i (0-based), scroll to it and load it into the editor.
+
+        Only the selection changes: rebuilding the list and chart here deleted the chart box that was
+        being clicked while it still handled the click."""
         if 0 <= i < len(self.script["steps"]):
-            self.refresh_list(select=i)
+            self.tree.blockSignals(True)
+            self._select_rows(i)
+            self.tree.blockSignals(False)
             self._on_select()
 
     def mark_running(self, i):
